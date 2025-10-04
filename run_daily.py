@@ -23,7 +23,7 @@ import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional
+from typing import Callable, Dict, Iterable, List
 
 import pandas as pd
 
@@ -177,10 +177,15 @@ def _run_tests(tests_path: Path) -> None:
         [sys.executable, "-m", "pytest", str(tests_path)],
         cwd=tests_path.parent,
         check=False,
-        capture_output=False,
+        capture_output=True,
+        text=True,
     )
 
     if result.returncode != 0:
+        if result.stdout:
+            LOGGER.error("Pytest stdout:\n%s", result.stdout)
+        if result.stderr:
+            LOGGER.error("Pytest stderr:\n%s", result.stderr)
         raise RuntimeError("Pytest suite failed; aborting daily run")
 
 
@@ -239,7 +244,7 @@ def main() -> None:
         LOGGER.exception("Daily run failed: %s", exc)
         sys.exit(1)
 
-    print("Daily run complete")
+    LOGGER.info("Daily run complete")
 
 
 if __name__ == "__main__":

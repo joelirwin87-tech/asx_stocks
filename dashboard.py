@@ -19,8 +19,9 @@ APP_ROOT = Path(__file__).resolve().parent
 DATA_DIR = APP_ROOT / "data"
 DEFAULT_DB_PATH = APP_ROOT / "db" / "signals.db"
 
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+_APP_INSTANCE: Optional[Flask] = None
 
 
 def ensure_runtime_directories(data_dir: Path, db_path: Path) -> None:
@@ -172,7 +173,7 @@ def build_trades_per_strategy_chart(summaries: List[Dict[str, Any]]) -> Optional
     return figure.to_dict()
 
 
-def configure_app() -> Flask:
+def create_app() -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "asx-dashboard-secret")
     data_directory = Path(os.environ.get("DATA_DIRECTORY", str(DATA_DIR)))
@@ -182,6 +183,13 @@ def configure_app() -> Flask:
     app.config["DB_PATH"] = db_path
     register_routes(app)
     return app
+
+
+def get_app() -> Flask:
+    global _APP_INSTANCE
+    if _APP_INSTANCE is None:
+        _APP_INSTANCE = create_app()
+    return _APP_INSTANCE
 
 
 def register_routes(app: Flask) -> None:
@@ -300,10 +308,6 @@ def register_routes(app: Flask) -> None:
         )
 
     app._dashboard_routes_registered = True  # type: ignore[attr-defined]
-
-
-app = configure_app()
-register_routes(app)
 
 
 def humanise_number(value: Any) -> str:
@@ -523,5 +527,17 @@ def locate_trade_file(ticker: str, data_dir: Path) -> Optional[Path]:
     return matches[0] if matches else None
 
 
-if __name__ == "__main__":
+def main() -> None:
+    logging.basicConfig(level=logging.INFO)
+    app = get_app()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=False)
+
+
+def __getattr__(name: str) -> Any:
+    if name == "app":
+        return get_app()
+    raise AttributeError(f"module '{__name__}' has no attribute '{name}'")
+
+
+if __name__ == "__main__":
+    main()
