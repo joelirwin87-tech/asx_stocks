@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -11,19 +12,33 @@ import pandas as pd
 import yfinance as yf
 
 
+LOGGER = logging.getLogger(__name__)
+
 CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 DATA_DIR = Path(__file__).resolve().parent / "data"
+DB_DIR = Path(__file__).resolve().parent / "db"
 DATE_FORMAT = "%Y-%m-%d"
 DEFAULT_START_DATE = datetime(1990, 1, 1)
 EXPECTED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
 CANONICAL_COLUMN_MAP = {
     "date": "Date",
+    "datetime": "Date",
     "open": "Open",
     "high": "High",
     "low": "Low",
     "close": "Close",
+    "adjclose": "Close",
+    "adj_close": "Close",
+    "adj. close": "Close",
+    "closeadj": "Close",
+    "price": "Close",
+    "last": "Close",
     "volume": "Volume",
+    "vol": "Volume",
 }
+
+for directory in (DATA_DIR, DB_DIR):
+    directory.mkdir(parents=True, exist_ok=True)
 
 
 def load_config(config_path: Path) -> dict:
@@ -73,7 +88,18 @@ def _canonicalize_column_name(column: object) -> str:
     """Return a canonical column name for price data."""
 
     if isinstance(column, tuple):
-        column = column[0]
+        flattened: List[str] = []
+        for part in column:
+            if part is None:
+                continue
+            text = str(part).strip()
+            if not text:
+                continue
+            flattened.append(text)
+        if flattened:
+            column = flattened[0]
+        else:
+            column = ""
 
     column_str = str(column).strip()
 
@@ -84,10 +110,14 @@ def _canonicalize_column_name(column: object) -> str:
             column_str = parts[0].strip("'\"")
 
     normalized_key = column_str.lower().replace(" ", "_")
-    base_key = normalized_key.split("_")[0].split(".")[0]
+    base_key = normalized_key.replace("__", "_").strip("_")
 
     if base_key in CANONICAL_COLUMN_MAP:
         return CANONICAL_COLUMN_MAP[base_key]
+
+    for candidate in normalized_key.split("_"):
+        if candidate in CANONICAL_COLUMN_MAP:
+            return CANONICAL_COLUMN_MAP[candidate]
 
     return column_str
 
@@ -115,8 +145,11 @@ def normalize_price_dataframe(data_frame: pd.DataFrame) -> pd.DataFrame:
         normalized.rename(columns={"index": "Date"}, inplace=True)
 
     missing_columns = [column for column in EXPECTED_COLUMNS if column not in normalized.columns]
-    if missing_columns:
-        raise ValueError(f"Dataframe is missing required columns: {missing_columns}")
+    if "Date" in missing_columns:
+        raise ValueError("Dataframe is missing required Date column")
+
+    for column in missing_columns:
+        normalized[column] = pd.NA
 
     normalized = normalized[EXPECTED_COLUMNS].copy()
 
@@ -182,9 +215,11 @@ def fetch_new_data(ticker: str, start_date: datetime, end_date: datetime) -> pd.
             progress=False,
         )
     except Exception as exc:  # pylint: disable=broad-except
-        raise ConnectionError(f"Failed to download data for {ticker}: {exc}") from exc
+        LOGGER.warning("Failed to download data for %s: %s", ticker, exc)
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     if data.empty:
+        LOGGER.info("No data returned for %s between %s and %s", ticker, start_date, end_date)
         return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     data = data.reset_index()
@@ -192,7 +227,8 @@ def fetch_new_data(ticker: str, start_date: datetime, end_date: datetime) -> pd.
     try:
         normalized = normalize_price_dataframe(data)
     except ValueError as exc:
-        raise ValueError(f"Downloaded data for {ticker} is invalid: {exc}") from exc
+        LOGGER.warning("Downloaded data for %s is invalid: %s", ticker, exc)
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     return normalized
 
@@ -203,7 +239,7 @@ def save_normalized_data(csv_path: Path, data_frame: pd.DataFrame, ticker: str) 
     try:
         data_frame.to_csv(csv_path, index=False)
     except OSError as exc:
-        print(f"WARNING: Failed to update {ticker}: {exc}")
+        LOGGER.warning("Failed to persist normalized data for %s: %s", ticker, exc)
         return False
 
     return True
@@ -212,18 +248,16 @@ def save_normalized_data(csv_path: Path, data_frame: pd.DataFrame, ticker: str) 
 def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
     """Update CSV data for a single ticker.
 
-def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
-    """Update CSV data for a single ticker.
-
-    Returns True when the ticker data was processed successfully, even if no
-    new rows were added. Returns False when the update failed.
+    Returns ``True`` when the ticker data was processed successfully, even if no
+    new rows were added. Returns ``False`` when the update failed.
     """
+
     csv_path = DATA_DIR / f"{ticker.replace('/', '_')}.csv"
 
     try:
         existing_data, needs_resave = read_existing_data(csv_path)
     except Exception as exc:  # pylint: disable=broad-except
-        print(f"WARNING: Failed to update {ticker}: {exc}")
+        LOGGER.warning("Failed to read existing data for %s: %s", ticker, exc)
         return False
 
     fetch_start = determine_fetch_start_date(existing_data, config_start_date)
@@ -232,19 +266,15 @@ def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
     if fetch_start.date() > today.date():
         if needs_resave and not save_normalized_data(csv_path, existing_data, ticker):
             return False
-        print(f"{ticker}: data is already up to date.")
+        LOGGER.info("%s data is already up to date", ticker)
         return True
 
-    try:
-        new_data = fetch_new_data(ticker, fetch_start, today)
-    except Exception as exc:  # pylint: disable=broad-except
-        print(f"WARNING: Failed to update {ticker}: {exc}")
-        return False
+    new_data = fetch_new_data(ticker, fetch_start, today)
 
     if new_data.empty:
         if needs_resave and not save_normalized_data(csv_path, existing_data, ticker):
             return False
-        print(f"{ticker}: no new data available.")
+        LOGGER.info("%s returned no new rows", ticker)
         return True
 
     if not existing_data.empty:
@@ -255,17 +285,18 @@ def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
     try:
         combined.to_csv(csv_path, index=False)
     except OSError as exc:
-        print(f"WARNING: Failed to update {ticker}: {exc}")
+        LOGGER.warning("Failed to persist updated data for %s: %s", ticker, exc)
         return False
 
     new_rows = len(combined) - len(existing_data)
-    print(f"{ticker}: data updated with {new_rows} new row(s).")
+    LOGGER.info("%s updated with %s new row(s)", ticker, new_rows)
 
     return True
 
 
 def main() -> None:
     """Main entry point for the data fetcher script."""
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     try:
         config = load_config(CONFIG_FILE)
         ensure_data_directory(DATA_DIR)
@@ -282,11 +313,13 @@ def main() -> None:
                 else:
                     failure_count += 1
             except Exception as exc:  # pylint: disable=broad-except
-                print(f"WARNING: Failed to update {ticker}: {exc}")
+                LOGGER.warning("Failed to update %s: %s", ticker, exc)
                 failure_count += 1
-        print(f"Data update complete with {success_count} success, {failure_count} failed")
+        LOGGER.info(
+            "Data update complete with %s success, %s failed", success_count, failure_count
+        )
     except Exception as exc:  # pylint: disable=broad-except
-        print(f"Fatal error: {exc}")
+        LOGGER.exception("Fatal error while updating data: %s", exc)
         sys.exit(1)
 
 

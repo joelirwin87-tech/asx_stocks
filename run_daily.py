@@ -53,6 +53,14 @@ STRATEGY_CONFIGS: List[StrategyConfig] = [
 ]
 
 
+def _ensure_runtime_directories(repo_root: Path) -> None:
+    for path in {repo_root / "data", repo_root / "db", data_fetcher.DATA_DIR, alerts.DEFAULT_DATA_DIR}:
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            LOGGER.debug("Unable to create directory %s: %s", path, exc)
+
+
 def _run_data_update() -> None:
     """Invoke ``data_fetcher.update`` with a robust fallback implementation."""
 
@@ -145,6 +153,10 @@ def _run_strategies_and_backtests(data_frames: Dict[str, pd.DataFrame], output_d
                 )
 
         summary_df = pd.DataFrame(summaries)
+        if summary_df.empty:
+            summary_df = pd.DataFrame(
+                columns=["Ticker", "Trades", "HitRate", "TotalPnL", "CumReturn", "TradesGenerated"]
+            )
         summary_path = output_dir / f"{config.name}_summary.csv"
         summary_df.to_csv(summary_path, index=False)
         LOGGER.info("Saved summary for %s to %s", config.name, summary_path)
@@ -209,6 +221,7 @@ def main() -> None:
     tests_dir = repo_root / "tests"
 
     try:
+        _ensure_runtime_directories(repo_root)
         _run_data_update()
 
         LOGGER.info("Loading price data from %s", data_dir)

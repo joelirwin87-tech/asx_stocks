@@ -41,8 +41,22 @@
         </button>
         <div class="collapse navbar-collapse" id="navbarNav">
             <ul class="navbar-nav ms-auto">
-                <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Summary</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Home</a></li>
                 <li class="nav-item"><a class="nav-link" href="{{ url_for('signals') }}">Signals</a></li>
+                {% if trade_nav_links %}
+                    <li class="nav-item dropdown">
+                        <a class="nav-link dropdown-toggle" href="#" id="tradesDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+                            Trades
+                        </a>
+                        <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="tradesDropdown">
+                            {% for trade_link in trade_nav_links %}
+                                <li><a class="dropdown-item" href="{{ trade_link.url }}">{{ trade_link.label }}</a></li>
+                            {% endfor %}
+                        </ul>
+                    </li>
+                {% else %}
+                    <li class="nav-item"><span class="nav-link disabled" tabindex="-1" aria-disabled="true">Trades</span></li>
+                {% endif %}
             </ul>
         </div>
     </div>

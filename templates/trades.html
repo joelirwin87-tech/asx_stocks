@@ -15,7 +15,7 @@
     <div class="card-body">
         {% if not trades_df.empty %}
             <div class="table-responsive mb-3">
-                {{ trades_df.to_html(classes="table table-striped table-sm align-middle", index=False) | safe }}
+                {{ trades_df.to_html(classes="table table-striped table-hover table-sm align-middle", index=False) | safe }}
             </div>
             {% if chart_config %}
                 <div id="trades-chart" style="height:360px;"></div>
@@ -24,9 +24,13 @@
                     No numeric columns available to visualise.
                 </div>
             {% endif %}
-        {% else %}
+        {% elif not_found %}
             <div class="alert alert-warning mb-0" role="alert">
-                No trades were found for ticker {{ ticker }}.
+                No trade history is available for {{ ticker }}. Please upload a CSV to {{ data_source or 'the data directory' }}.
+            </div>
+        {% else %}
+            <div class="alert alert-info mb-0" role="alert">
+                Trade data is currently empty but the file structure is available.
             </div>
         {% endif %}
     </div>
