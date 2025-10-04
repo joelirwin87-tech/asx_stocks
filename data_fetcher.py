@@ -212,6 +212,9 @@ def save_normalized_data(csv_path: Path, data_frame: pd.DataFrame, ticker: str) 
 def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
     """Update CSV data for a single ticker.
 
+def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
+    """Update CSV data for a single ticker.
+
     Returns True when the ticker data was processed successfully, even if no
     new rows were added. Returns False when the update failed.
     """
@@ -244,14 +247,15 @@ def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
         print(f"{ticker}: no new data available.")
         return True
 
+    if not existing_data.empty:
+        existing_data["Date"] = pd.to_datetime(existing_data["Date"])
+        existing_data["Date"] = existing_data["Date"].dt.strftime(DATE_FORMAT)
+
     combined = pd.concat([existing_data, new_data], ignore_index=True)
     try:
-        combined = normalize_price_dataframe(combined)
-    except ValueError as exc:
+        combined.to_csv(csv_path, index=False)
+    except OSError as exc:
         print(f"WARNING: Failed to update {ticker}: {exc}")
-        return False
-
-    if not save_normalized_data(csv_path, combined, ticker):
         return False
 
     new_rows = len(combined) - len(existing_data)
