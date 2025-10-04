@@ -8,6 +8,36 @@
     </div>
     <a class="btn btn-outline-primary" href="{{ url_for('signals') }}">View Signals</a>
 </div>
+{% if equity_curve_chart or trades_chart %}
+    <div class="row gy-4 mb-4">
+        {% if equity_curve_chart %}
+            <div class="col-12 col-lg-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h2 class="h5 mb-0">Portfolio Equity Curve</h2>
+                            <span class="badge bg-primary-subtle text-primary">Overview</span>
+                        </div>
+                        <div id="{{ equity_chart_id }}" style="height:360px;"></div>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+        {% if trades_chart %}
+            <div class="col-12 col-lg-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-center mb-3">
+                            <h2 class="h5 mb-0">Trades Per Strategy</h2>
+                            <span class="badge bg-info-subtle text-info">Overview</span>
+                        </div>
+                        <div id="{{ trades_chart_id }}" style="height:360px;"></div>
+                    </div>
+                </div>
+            </div>
+        {% endif %}
+    </div>
+{% endif %}
 {% if summaries %}
     <div class="row gy-4">
         {% for summary in summaries %}
