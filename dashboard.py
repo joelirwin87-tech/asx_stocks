@@ -13,6 +13,8 @@ import pandas as pd
 import plotly.graph_objects as go
 from flask import Flask, flash, render_template, url_for
 
+from alerts import ensure_alerts_database
+
 APP_ROOT = Path(__file__).resolve().parent
 DATA_DIR = APP_ROOT / "data"
 DEFAULT_DB_PATH = APP_ROOT / "db" / "signals.db"
@@ -349,7 +351,8 @@ def load_strategy_summaries(data_dir: Path) -> List[Dict[str, Any]]:
 
 def read_database(db_path: Path) -> Optional[pd.DataFrame]:
     try:
-        ensure_signals_database(db_path)
+        with ensure_alerts_database(db_path):
+            pass
     except Exception:
         logger.error("Signals database could not be ensured at %s", db_path)
         return None
