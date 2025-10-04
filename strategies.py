@@ -1,135 +1,172 @@
-"""Trading strategy signal generators.
+"""Trading strategy implementations.
 
-This module provides several signal-generating functions that operate on
-price/volume DataFrames. Each function returns a boolean ``Series`` aligned
-with the input DataFrame index, indicating entry opportunities for the
-respective strategy.
+Each strategy adheres to the :class:`BaseStrategy` interface, producing a
+DataFrame of trade signals for an individual ticker. Signals follow a consistent
+schema with the columns ``Date``, ``Ticker``, ``Signal``, ``Price`` and
+``Strategy``. Downstream components can therefore operate on strategy output
+without bespoke handling for each algorithm.
 
-All functions validate the required columns and handle missing values by
-forward-filling rolling calculations. Missing price/volume data will result in
-``False`` signals for those rows.
+The strategies included are intentionally simple yet illustrative. They balance
+clarity, configurability and the ability to compose multiple signals for a
+single ticker.
 """
 from __future__ import annotations
 
-from typing import Iterable
+from dataclasses import dataclass
+from typing import Dict, List, Sequence
 
 import pandas as pd
 
+SignalFrame = pd.DataFrame
 
-REQUIRED_COLUMNS = {"Open", "High", "Low", "Close", "Volume"}
+
+@dataclass(slots=True)
+class BaseStrategy:
+    """Base class for trading strategies."""
+
+    name: str
+
+    def generate_signals(self, ticker: str, data: pd.DataFrame) -> SignalFrame:
+        raise NotImplementedError
+
+    def _build_signal_frame(
+        self,
+        ticker: str,
+        data: pd.DataFrame,
+        buy_mask: pd.Series,
+        sell_mask: pd.Series,
+        price_column: str = "Close",
+    ) -> SignalFrame:
+        """Construct a normalised signal DataFrame from boolean masks."""
+
+        records: List[Dict[str, object]] = []
+        for date, price in data.loc[buy_mask, ["Date", price_column]].itertuples(index=False):
+            records.append(
+                {
+                    "Date": pd.to_datetime(date),
+                    "Ticker": ticker,
+                    "Signal": "BUY",
+                    "Price": float(price),
+                    "Strategy": self.name,
+                }
+            )
+        for date, price in data.loc[sell_mask, ["Date", price_column]].itertuples(index=False):
+            records.append(
+                {
+                    "Date": pd.to_datetime(date),
+                    "Ticker": ticker,
+                    "Signal": "SELL",
+                    "Price": float(price),
+                    "Strategy": self.name,
+                }
+            )
+        if not records:
+            return pd.DataFrame(columns=["Date", "Ticker", "Signal", "Price", "Strategy"])
+        frame = pd.DataFrame.from_records(records)
+        frame.sort_values("Date", inplace=True)
+        frame.reset_index(drop=True, inplace=True)
+        return frame
 
 
-def _validate_dataframe(df: pd.DataFrame, required: Iterable[str]) -> None:
-    """Ensure the DataFrame contains the required columns.
+@dataclass(slots=True)
+class SMACrossoverStrategy(BaseStrategy):
+    short_window: int = 10
+    long_window: int = 30
 
-    Parameters
-    ----------
-    df:
-        Input OHLCV DataFrame.
-    required:
-        Iterable of required column names.
+    def __post_init__(self) -> None:
+        if self.short_window >= self.long_window:
+            raise ValueError("short_window must be less than long_window")
 
-    Raises
-    ------
-    ValueError
-        If any required column is missing.
-    """
-
-    missing = [column for column in required if column not in df.columns]
-    if missing:
-        raise ValueError(
-            "DataFrame is missing required columns: " + ", ".join(sorted(missing))
+    def generate_signals(self, ticker: str, data: pd.DataFrame) -> SignalFrame:
+        df = data.copy()
+        df["sma_short"] = df["Close"].rolling(self.short_window).mean()
+        df["sma_long"] = df["Close"].rolling(self.long_window).mean()
+        crossover_up = (df["sma_short"] > df["sma_long"]) & (
+            df["sma_short"].shift(1) <= df["sma_long"].shift(1)
         )
+        crossover_down = (df["sma_short"] < df["sma_long"]) & (
+            df["sma_short"].shift(1) >= df["sma_long"].shift(1)
+        )
+        return self._build_signal_frame(ticker, df, crossover_up.fillna(False), crossover_down.fillna(False))
 
 
-def _safe_rolling_mean(series: pd.Series, window: int) -> pd.Series:
-    """Return a simple moving average while preserving the Series index."""
+@dataclass(slots=True)
+class PullbackUptrendStrategy(BaseStrategy):
+    fast_window: int = 20
+    slow_window: int = 50
+    pullback_pct: float = 0.03
+    pullback_window: int = 5
 
-    return series.rolling(window=window, min_periods=window).mean()
+    def __post_init__(self) -> None:
+        if self.fast_window >= self.slow_window:
+            raise ValueError("fast_window must be less than slow_window")
+        if not (0 < self.pullback_pct < 0.2):
+            raise ValueError("pullback_pct should be between 0 and 0.2")
 
+    def generate_signals(self, ticker: str, data: pd.DataFrame) -> SignalFrame:
+        df = data.copy()
+        df["sma_fast"] = df["Close"].rolling(self.fast_window).mean()
+        df["sma_slow"] = df["Close"].rolling(self.slow_window).mean()
+        df["pullback_low"] = df["Low"].rolling(self.pullback_window).min()
 
-def _compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
-    """Compute the Relative Strength Index (RSI).
-
-    The implementation uses the classic Wilder smoothing method.
-    """
-
-    delta = series.diff()
-    gain = delta.clip(lower=0)
-    loss = -delta.clip(upper=0)
-
-    avg_gain = gain.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-    avg_loss = loss.ewm(alpha=1 / period, adjust=False, min_periods=period).mean()
-
-    rs = avg_gain / avg_loss
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(0)
-
-
-def sma_cross(df: pd.DataFrame) -> pd.Series:
-    """Return entry signals where the 10-period SMA crosses above the 50-period SMA."""
-
-    _validate_dataframe(df, REQUIRED_COLUMNS)
-    close = df["Close"].astype(float)
-
-    sma_fast = _safe_rolling_mean(close, 10)
-    sma_slow = _safe_rolling_mean(close, 50)
-
-    cross_up = (sma_fast > sma_slow) & (sma_fast.shift(1) <= sma_slow.shift(1))
-    cross_up = cross_up & sma_fast.notna() & sma_slow.notna()
-    return cross_up.fillna(False)
+        uptrend = df["sma_fast"] > df["sma_slow"]
+        pullback_trigger = df["pullback_low"] < df["sma_fast"] * (1 - self.pullback_pct)
+        cross_above_fast = (df["Close"] > df["sma_fast"]) & (df["Close"].shift(1) <= df["sma_fast"].shift(1))
+        entries = uptrend & pullback_trigger.shift(1, fill_value=False) & cross_above_fast
+        exits = df["Close"] < df["sma_slow"]
+        return self._build_signal_frame(ticker, df, entries.fillna(False), exits.fillna(False))
 
 
-def pullback_uptrend(df: pd.DataFrame) -> pd.Series:
-    """Return entry signals for pullbacks within an uptrend.
+@dataclass(slots=True)
+class DonchianBreakoutStrategy(BaseStrategy):
+    breakout_lookback: int = 20
+    exit_lookback: int = 10
 
-    A signal is generated when the close is above the 50-period SMA and the
-    14-period RSI is below 40 (oversold in an uptrend scenario).
-    """
+    def __post_init__(self) -> None:
+        if self.breakout_lookback <= 2:
+            raise ValueError("breakout_lookback must be greater than 2")
+        if self.exit_lookback <= 1:
+            raise ValueError("exit_lookback must be greater than 1")
 
-    _validate_dataframe(df, REQUIRED_COLUMNS)
-    close = df["Close"].astype(float)
-
-    sma_50 = _safe_rolling_mean(close, 50)
-    rsi_14 = _compute_rsi(close, 14)
-
-    signal = (close > sma_50) & (rsi_14 < 40)
-    return signal.fillna(False)
-
-
-def donchian_breakout(df: pd.DataFrame) -> pd.Series:
-    """Return entry signals when price breaks above the prior 20-day high."""
-
-    _validate_dataframe(df, REQUIRED_COLUMNS)
-    high = df["High"].astype(float)
-    close = df["Close"].astype(float)
-
-    prior_high = high.rolling(window=20, min_periods=20).max().shift(1)
-    signal = close > prior_high
-    return signal.fillna(False)
+    def generate_signals(self, ticker: str, data: pd.DataFrame) -> SignalFrame:
+        df = data.copy()
+        df["upper"] = df["High"].rolling(self.breakout_lookback).max().shift(1)
+        df["lower"] = df["Low"].rolling(self.exit_lookback).min().shift(1)
+        entries = df["Close"] > df["upper"]
+        exits = df["Close"] < df["lower"]
+        return self._build_signal_frame(ticker, df, entries.fillna(False), exits.fillna(False))
 
 
-def gapup_highvol(df: pd.DataFrame) -> pd.Series:
-    """Return entry signals for gap-up openings with elevated volume."""
+@dataclass(slots=True)
+class GapUpHighVolumeStrategy(BaseStrategy):
+    gap_pct: float = 0.03
+    volume_ratio: float = 1.5
+    volume_window: int = 20
 
-    _validate_dataframe(df, REQUIRED_COLUMNS)
-    open_ = df["Open"].astype(float)
-    high = df["High"].astype(float)
-    volume = df["Volume"].astype(float)
+    def __post_init__(self) -> None:
+        if self.gap_pct <= 0:
+            raise ValueError("gap_pct must be positive")
+        if self.volume_ratio <= 1:
+            raise ValueError("volume_ratio must be greater than 1")
 
-    prev_high = high.shift(1)
-    prev_volume = volume.shift(1)
+    def generate_signals(self, ticker: str, data: pd.DataFrame) -> SignalFrame:
+        df = data.copy()
+        df["prev_close"] = df["Close"].shift(1)
+        df["gap"] = (df["Open"] - df["prev_close"]) / df["prev_close"]
+        df["avg_volume"] = df["Volume"].rolling(self.volume_window).mean()
+        entries = (df["gap"] >= self.gap_pct) & (df["Volume"] >= df["avg_volume"] * self.volume_ratio)
+        exits = df["Close"] < df["prev_close"]
+        return self._build_signal_frame(ticker, df, entries.fillna(False), exits.fillna(False))
 
-    gap_condition = open_ > (prev_high * 1.01)
-    volume_condition = volume > (prev_volume * 1.5)
 
-    signal = gap_condition & volume_condition
-    return signal.fillna(False)
+def build_default_strategies(config: Dict[str, dict] | None = None) -> Sequence[BaseStrategy]:
+    """Create strategy instances using optional configuration overrides."""
 
-
-__all__ = [
-    "sma_cross",
-    "pullback_uptrend",
-    "donchian_breakout",
-    "gapup_highvol",
-]
+    config = config or {}
+    strategies: List[BaseStrategy] = [
+        SMACrossoverStrategy(name="SMA Crossover", **config.get("sma_crossover", {})),
+        PullbackUptrendStrategy(name="Pullback Uptrend", **config.get("pullback_uptrend", {})),
+        DonchianBreakoutStrategy(name="Donchian Breakout", **config.get("donchian_breakout", {})),
+        GapUpHighVolumeStrategy(name="Gap Up High Volume", **config.get("gap_up_high_volume", {})),
+    ]
+    return strategies

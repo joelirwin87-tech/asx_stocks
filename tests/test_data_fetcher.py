@@ -1,41 +1,28 @@
-"""Tests for the data fetcher utilities."""
-
 from __future__ import annotations
 
-import io
-from datetime import datetime
-import warnings
+from pathlib import Path
 
 import pandas as pd
+import pytest
 
-import data_fetcher
+from data_fetcher import DataFetcher
 
 
-def test_normalize_and_determine_fetch_start_date_without_user_warning() -> None:
-    """Mixed date formats should parse without emitting UserWarning."""
+def test_fetcher_normalises_and_saves(tmp_path: Path, mock_data_fetch):
+    fetcher = DataFetcher(data_dir=tmp_path)
+    result = fetcher.fetch("TEST.AX", start_date="2023-01-01")
+    assert result.success
+    assert (tmp_path / "TEST_AX.csv").exists()
+    assert list(result.data.columns) == ["Date", "Open", "High", "Low", "Close", "Volume"]
+    assert pd.api.types.is_datetime64_any_dtype(pd.to_datetime(result.data["Date"]))
 
-    csv_content = "\n".join(
-        [
-            "Date,Open,High,Low,Close,Volume",
-            "2024-01-01,1,1,1,1,100",
-            "20240102,2,2,2,2,200",
-            "2024-01-03 00:00:00,3,3,3,3,300",
-            "",
-        ]
-    )
-    csv_buffer = io.StringIO(csv_content)
-    raw_frame = pd.read_csv(csv_buffer)
 
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        normalized = data_fetcher.normalize_price_dataframe(raw_frame)
+def test_fetcher_handles_empty(monkeypatch, tmp_path: Path):
+    def fake_download(*args, **kwargs):
+        return pd.DataFrame()
 
-    assert normalized["Date"].tolist() == ["2024-01-01", "2024-01-02", "2024-01-03"]
-
-    config_start_date = datetime(2023, 12, 31)
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("error", UserWarning)
-        fetch_start = data_fetcher.determine_fetch_start_date(normalized, config_start_date)
-
-    assert fetch_start == datetime(2024, 1, 4)
+    monkeypatch.setattr("yfinance.download", fake_download)
+    fetcher = DataFetcher(data_dir=tmp_path)
+    result = fetcher.fetch("TEST.AX", start_date="2023-01-01")
+    assert not result.success
+    assert result.error

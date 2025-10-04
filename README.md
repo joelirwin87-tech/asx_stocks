@@ -1,95 +1,95 @@
-ASX STOCKS BACKTESTER
+# ASX Stocks Trading Pipeline
 
-Offline-first pipeline for fetching, backtesting, and alerting  
-on ASX-listed stocks using Python, Flask, and yfinance.
+A production-ready Python project that automates the daily ingestion, analysis, and presentation of Australian Securities Exchange (ASX) stock data. The system downloads OHLCV data, evaluates multiple trading strategies, performs risk-aware backtesting, persists actionable alerts, and renders the results in a modern Flask dashboard.
 
-Designed for swing-trading strategies and lightweight local use.  
-Includes a styled dashboard with Bootstrap and Plotly charts.
+## Features
 
-Features
+- **Robust data ingestion** via Yahoo Finance with schema normalisation and per-ticker CSV storage.
+- **Pluggable trading strategies** including SMA crossover, pullback uptrend, Donchian breakout, and gap-up high volume setups.
+- **Capital-aware backtesting** with configurable position sizing, take-profit, and stop-loss parameters.
+- **Alert management** stored in SQLite for historical reference.
+- **Flask dashboard** styled with Bootstrap 5 and Plotly visualisations for strategy summaries, equity curves, and alert tables.
+- **Extensive test suite** covering unit, integration, and Flask route behaviour.
 
-- Automated daily data fetch from Yahoo Finance  
-- Hardened `data_fetcher` with multi-index column flattening  
-- Multiple built-in strategies:
-  - **SMA crossovers** (10 / 50 day)  
-  - **Pullback in uptrend**  
-  - **Donchian channel breakout**  
-  - **Gap up with high volume**  
-- Resilient backtester with take-profit targets  
-- Alerts database auto-initialized, tolerant to empty trades  
-- Flask dashboard:
-  - Bootstrap 5 tables and summary cards  
-  - Plotly charts for trades and equity curves  
-  - Graceful fallbacks when data missing  
-- Integration tests covering config, data, strategies, alerts, and routes  
+## Project Structure
 
-Installation
+```
+.
+├── alerts.py
+├── backtester.py
+├── config.json
+├── data_fetcher.py
+├── dashboard.py
+├── requirements.txt
+├── run_daily.py
+├── strategies.py
+├── templates/
+│   ├── base.html
+│   ├── index.html
+│   ├── signals.html
+│   └── trades.html
+└── tests/
+    ├── conftest.py
+    ├── test_backtester.py
+    ├── test_dashboard.py
+    ├── test_data_fetcher.py
+    ├── test_integration.py
+    └── test_strategies.py
+```
 
-Clone the repo
-git clone https://github.com/joelirwin87-tech/asx_stocks.git
-cd asx_stocks
+## Getting Started
 
-Create virtual environment
-python3 -m venv venv
-source venv/bin/activate
+1. **Create and activate a virtual environment** (Python 3.12 recommended):
+   ```bash
+   python3 -m venv .venv
+   source .venv/bin/activate
+   ```
 
-Install dependencies
-pip install -r requirements.txt
+2. **Install dependencies**:
+   ```bash
+   pip install -r requirements.txt
+   ```
 
-Verify
-PYTHONPATH=. pytest tests/
+3. **Review `config.json`** and adjust tickers, capital, and strategy parameters to suit your preferences.
 
-Usage
+## Running the Daily Pipeline
 
-Run the daily pipeline:
-python run_daily.py
+Execute the end-to-end workflow from the command line:
+```bash
+python run_daily.py --config config.json --log INFO
+```
+The script will:
+- Download OHLCV data to the `data/` directory.
+- Run all configured strategies and aggregate signals.
+- Backtest the signals, writing trade logs to `reports/`.
+- Generate actionable alerts and store them in `signals.db`.
 
-Start the dashboard:
-python dashboard.py
+## Dashboard
 
-Then open your browser at:
-http://127.0.0.1:5000
+Launch the Flask dashboard to review performance and alerts:
+```bash
+export FLASK_APP=dashboard.py
+flask run --reload
+```
+The dashboard provides:
+- Overview of strategy metrics and equity curve.
+- Table of current alerts.
+- Per-ticker trade histories with Plotly charts.
 
-Configuration
+## Testing
 
-Edit config.json to set tickers, start date, capital, and profit targets.
-Example:
-{
-  "tickers": ["CBA.AX", "PMT.AX", "OEL.AX"],
-  "start_date": "2000-01-01",
-  "capital": 10000,
-  "tp_percents": [0.03, 0.05]
-}
+Run the full pytest suite:
+```bash
+pytest
+```
+All tests are self-contained and rely on mocked data sources to avoid external API calls.
 
-Directory Structure
+## Extending the System
 
-asx_stocks/
-│
-├── data/              		Price and trades CSVs
-├── db/                		SQLite signals.db
-├── tests/            		Integration and strategy tests
-├── alerts.py          		Alert generation + DB persistence
-├── backtester.py        	Trade simulation engine
-├── data_fetcher.py  		  Yahoo Finance integration
-├── dashboard.py      	  Flask app with Bootstrap + Plotly
-├── run_daily.py     		  Orchestrates full daily pipeline
-└── config.json   		    User configuration
+- Add new strategies by subclassing `BaseStrategy` in `strategies.py` and returning the standard signal DataFrame schema.
+- Introduce additional risk rules or reporting formats by extending `Backtester`.
+- Modify dashboard views or add new Flask routes as required; templates live in the `templates/` directory.
 
+## License
 
-Next Steps
-
-Extend with stop-loss handling
-
-
-Explore portfolio-level backtesting
-
-
-Add broker API integration for execution
-
-
-Polish dashboard charts with advanced metrics
-
-
-
-Built for Local, Offline-First, Resilient Market Testing
-
+This project is provided without a specific license. Adapt and extend it to suit your personal trading research needs.
