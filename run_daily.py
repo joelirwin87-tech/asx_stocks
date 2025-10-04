@@ -45,6 +45,31 @@ class StrategyConfig:
     take_profit_pct: float
 
 
+@dataclass(frozen=True)
+class DataUpdateStats:
+    total_tickers: int
+    succeeded: int
+    failed: int
+    failures: Dict[str, str]
+
+
+@dataclass(frozen=True)
+class BacktestStats:
+    strategies_attempted: int
+    ticker_count: int
+    combinations_attempted: int
+    combinations_failed: int
+    summaries_written: int
+    total_trades: int
+
+
+@dataclass(frozen=True)
+class AlertStats:
+    alerts_generated: int
+    tickers_with_alerts: int
+    strategies_triggered: int
+
+
 STRATEGY_CONFIGS: List[StrategyConfig] = [
     StrategyConfig("sma_cross", strategies.sma_cross, 0.05),
     StrategyConfig("pullback_uptrend", strategies.pullback_uptrend, 0.04),
@@ -61,28 +86,60 @@ def _ensure_runtime_directories(repo_root: Path) -> None:
             LOGGER.debug("Unable to create directory %s: %s", path, exc)
 
 
-def _run_data_update() -> None:
-    """Invoke ``data_fetcher.update`` with a robust fallback implementation."""
+def _run_data_update() -> DataUpdateStats:
+    """Update all configured tickers while capturing aggregate results."""
 
-    update_callable = getattr(data_fetcher, "update", None)
-    if callable(update_callable):
-        LOGGER.info("Running data_fetcher.update()")
-        update_callable()
-        return
-
-    LOGGER.info("data_fetcher.update() not found; running fallback updater")
+    LOGGER.info("Starting data updates for configured tickers")
 
     config = data_fetcher.load_config(data_fetcher.CONFIG_FILE)
     data_fetcher.ensure_data_directory(data_fetcher.DATA_DIR)
-    tickers: Iterable[str] = config["tickers"]
-    start_date = config["start_date"]
 
-    for ticker in tickers:
+    raw_tickers: Iterable[str] = config.get("tickers", [])  # type: ignore[arg-type]
+    start_date = config.get("start_date")
+
+    normalized_tickers: List[str] = []
+    if isinstance(raw_tickers, str):
+        raw_iterable: Iterable[str] = [raw_tickers]
+    else:
+        raw_iterable = raw_tickers
+
+    for raw in raw_iterable:
+        ticker = str(raw).strip().upper()
+        if not ticker:
+            LOGGER.warning("Encountered empty ticker symbol in configuration; skipping")
+            continue
+        normalized_tickers.append(ticker)
+
+    seen = list(dict.fromkeys(normalized_tickers))
+
+    total = len(seen)
+    successes = 0
+    failures: Dict[str, str] = {}
+
+    for ticker in seen:
         try:
             data_fetcher.update_ticker_data(ticker, start_date)
-        except Exception as exc:  # pragma: no cover - logged and surfaced
+            successes += 1
+        except Exception as exc:  # pragma: no cover - logged for diagnostics
+            failures[ticker] = str(exc)
             LOGGER.exception("Failed to update data for %s: %s", ticker, exc)
-            raise
+
+    stats = DataUpdateStats(total_tickers=total, succeeded=successes, failed=len(failures), failures=failures)
+
+    if stats.total_tickers == 0:
+        LOGGER.warning("No tickers configured for data update")
+    LOGGER.info(
+        "Data update summary | total=%s | succeeded=%s | failed=%s",
+        stats.total_tickers,
+        stats.succeeded,
+        stats.failed,
+    )
+
+    if stats.failed:
+        failed_details = ", ".join(f"{ticker}: {reason}" for ticker, reason in failures.items())
+        LOGGER.warning("Tickers with update failures: %s", failed_details)
+
+    return stats
 
 
 def _prepare_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
@@ -119,15 +176,25 @@ def _prepare_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
     return prepared
 
 
-def _run_strategies_and_backtests(data_frames: Dict[str, pd.DataFrame], output_dir: Path) -> None:
+def _run_strategies_and_backtests(
+    data_frames: Dict[str, pd.DataFrame], output_dir: Path
+) -> BacktestStats:
     """Execute each strategy/backtest combination and persist summary CSVs."""
 
     output_dir.mkdir(parents=True, exist_ok=True)
+
+    ticker_count = len(data_frames)
+    strategy_count = len(STRATEGY_CONFIGS)
+    combinations_attempted = 0
+    combinations_failed = 0
+    total_trades = 0
+    summaries_written = 0
 
     for config in STRATEGY_CONFIGS:
         summaries: List[Dict[str, float]] = []
 
         for ticker, raw_frame in data_frames.items():
+            combinations_attempted += 1
             try:
                 prepared = _prepare_dataframe(raw_frame)
                 signals = config.signal_func(prepared).reindex(prepared.index).fillna(False).astype(bool)
@@ -145,9 +212,12 @@ def _run_strategies_and_backtests(data_frames: Dict[str, pd.DataFrame], output_d
                     "TotalPnL": summary["TotalPnL"],
                     "CumReturn": summary["CumReturn"],
                 }
-                summary_record["TradesGenerated"] = int(len(trades_df))
+                trades_generated = int(len(trades_df))
+                summary_record["TradesGenerated"] = trades_generated
+                total_trades += trades_generated
                 summaries.append(summary_record)
             except Exception as exc:  # pragma: no cover - logged for diagnostics
+                combinations_failed += 1
                 LOGGER.exception(
                     "Failed to process strategy %s for ticker %s: %s", config.name, ticker, exc
                 )
@@ -159,14 +229,54 @@ def _run_strategies_and_backtests(data_frames: Dict[str, pd.DataFrame], output_d
             )
         summary_path = output_dir / f"{config.name}_summary.csv"
         summary_df.to_csv(summary_path, index=False)
+        summaries_written += 1
         LOGGER.info("Saved summary for %s to %s", config.name, summary_path)
 
+    stats = BacktestStats(
+        strategies_attempted=strategy_count,
+        ticker_count=ticker_count,
+        combinations_attempted=combinations_attempted,
+        combinations_failed=combinations_failed,
+        summaries_written=summaries_written,
+        total_trades=total_trades,
+    )
 
-def _generate_alerts(data_dir: Path, db_path: Path) -> None:
+    LOGGER.info(
+        "Backtest summary | strategies=%s | tickers=%s | attempted=%s | failed=%s | trades=%s",
+        stats.strategies_attempted,
+        stats.ticker_count,
+        stats.combinations_attempted,
+        stats.combinations_failed,
+        stats.total_trades,
+    )
+
+    return stats
+
+
+def _generate_alerts(data_dir: Path, db_path: Path) -> AlertStats:
     """Trigger alert generation and persistence."""
 
     LOGGER.info("Generating alerts using data from %s", data_dir)
-    alerts.generate_and_store_alerts(data_dir=data_dir, db_path=db_path)
+    generated_alerts = alerts.generate_and_store_alerts(data_dir=data_dir, db_path=db_path)
+
+    alert_count = len(generated_alerts)
+    tickers_with_alerts = len({alert.ticker for alert in generated_alerts})
+    strategies_triggered = len({alert.strategy for alert in generated_alerts})
+
+    stats = AlertStats(
+        alerts_generated=alert_count,
+        tickers_with_alerts=tickers_with_alerts,
+        strategies_triggered=strategies_triggered,
+    )
+
+    LOGGER.info(
+        "Alert generation summary | alerts=%s | tickers=%s | strategies=%s",
+        stats.alerts_generated,
+        stats.tickers_with_alerts,
+        stats.strategies_triggered,
+    )
+
+    return stats
 
 
 def _run_tests(tests_path: Path) -> None:
@@ -222,19 +332,41 @@ def main() -> None:
 
     try:
         _ensure_runtime_directories(repo_root)
-        _run_data_update()
+        data_stats = _run_data_update()
 
         LOGGER.info("Loading price data from %s", data_dir)
         data_frames = alerts.load_latest_ticker_data(data_dir)
 
         if not data_frames:
             LOGGER.warning("No ticker data available for strategy execution")
+            backtest_stats = BacktestStats(
+                strategies_attempted=len(STRATEGY_CONFIGS),
+                ticker_count=0,
+                combinations_attempted=0,
+                combinations_failed=0,
+                summaries_written=0,
+                total_trades=0,
+            )
         else:
-            _run_strategies_and_backtests(data_frames, output_dir)
+            backtest_stats = _run_strategies_and_backtests(data_frames, output_dir)
 
-        _generate_alerts(data_dir, db_path)
+        alert_stats = _generate_alerts(data_dir, db_path)
         _run_tests(tests_dir)
         _commit_changes(repo_root)
+        LOGGER.info(
+            "Daily run metrics | data_total=%s | data_success=%s | data_failed=%s | "
+            "backtests_attempted=%s | backtests_failed=%s | trades_generated=%s | "
+            "alerts_generated=%s | alert_tickers=%s | alert_strategies=%s",
+            data_stats.total_tickers,
+            data_stats.succeeded,
+            data_stats.failed,
+            backtest_stats.combinations_attempted,
+            backtest_stats.combinations_failed,
+            backtest_stats.total_trades,
+            alert_stats.alerts_generated,
+            alert_stats.tickers_with_alerts,
+            alert_stats.strategies_triggered,
+        )
     except Exception as exc:  # pragma: no cover - top-level safety net
         LOGGER.exception("Daily run failed: %s", exc)
         sys.exit(1)

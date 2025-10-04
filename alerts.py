@@ -168,7 +168,8 @@ def _read_data_file(path: Path) -> pd.DataFrame:
         elif suffix in {".json"}:
             frame = pd.read_json(path, orient="records")
         else:
-            raise DataLoadError(f"Unsupported file extension for {path}")
+            LOGGER.warning("Unsupported data file %s; skipping", path)
+            return pd.DataFrame()
     except pd.errors.EmptyDataError:
         LOGGER.info("Data file %s is empty", path)
         return pd.DataFrame()
@@ -401,18 +402,16 @@ def ensure_alerts_database(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connec
 
 
 def _persist_alerts(alerts: Sequence[Alert], db_path: Path = DEFAULT_DB_PATH) -> None:
-    if not alerts:
-        return
-
     with ensure_alerts_database(db_path) as conn:
-        conn.executemany(
-            """
-            INSERT OR IGNORE INTO alerts (
-                date, ticker, strategy, entry_price, target_price, stop_loss
-            ) VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [alert.as_row() for alert in alerts],
-        )
+        if alerts:
+            conn.executemany(
+                """
+                INSERT OR IGNORE INTO alerts (
+                    date, ticker, strategy, entry_price, target_price, stop_loss
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [alert.as_row() for alert in alerts],
+            )
         conn.commit()
 
 
