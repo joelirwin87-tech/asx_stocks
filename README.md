@@ -1,6 +1,4 @@
-===============================================================
-               A S X   S T O C K S   B A C K T E S T E R
-===============================================================
+A S X   S T O C K S   B A C K T E S T E R
 
 Offline-first pipeline for fetching, backtesting, and alerting
 on ASX-listed stocks using Python, Flask, and yfinance.
