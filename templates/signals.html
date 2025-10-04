@@ -1,0 +1,24 @@
+{% extends "layout.html" %}
+{% block title %}Signals - ASX Strategies Dashboard{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-1">Today's Signals</h1>
+        <p class="text-muted mb-0">Pulled directly from the alerts database.</p>
+    </div>
+    <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back to Summary</a>
+</div>
+<div class="card">
+    <div class="card-body">
+        {% if not signals_df.empty %}
+            <div class="table-responsive">
+                {{ signals_df.to_html(classes="table table-striped table-sm align-middle", index=False) | safe }}
+            </div>
+        {% else %}
+            <div class="alert alert-info mb-0" role="alert">
+                No alerts were found for today.
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}

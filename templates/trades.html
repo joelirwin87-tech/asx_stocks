@@ -1,0 +1,45 @@
+{% extends "layout.html" %}
+{% block title %}{{ ticker }} Trades - ASX Strategies Dashboard{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-1">{{ ticker }} Trade History</h1>
+        <p class="text-muted mb-0">Historical executions sourced from CSV files.</p>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back to Summary</a>
+        <a class="btn btn-outline-primary" href="{{ url_for('signals') }}">View Signals</a>
+    </div>
+</div>
+<div class="card mb-4">
+    <div class="card-body">
+        {% if not trades_df.empty %}
+            <div class="table-responsive mb-3">
+                {{ trades_df.to_html(classes="table table-striped table-sm align-middle", index=False) | safe }}
+            </div>
+            {% if chart_config %}
+                <div id="trades-chart" style="height:360px;"></div>
+            {% else %}
+                <div class="alert alert-info mb-0" role="alert">
+                    No numeric columns available to visualise.
+                </div>
+            {% endif %}
+        {% else %}
+            <div class="alert alert-warning mb-0" role="alert">
+                No trades were found for ticker {{ ticker }}.
+            </div>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+{% block body_scripts %}
+{{ super() }}
+{% if chart_config %}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const config = {{ chart_config | tojson | safe }};
+        Plotly.newPlot('trades-chart', config.data, config.layout, {responsive: true, displayModeBar: false});
+    });
+</script>
+{% endif %}
+{% endblock %}

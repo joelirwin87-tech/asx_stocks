@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta http-equiv="x-ua-compatible" content="ie=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no">
+    <meta http-equiv="refresh" content="60">
+    <title>{% block title %}ASX Strategies Dashboard{% endblock %}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" integrity="sha384-TNMGnD65V6pGPLtfRVPC5zsxFrqxbPjzjuY4xXHzkwmo7aX6ixkmKsgNHfYkP82" crossorigin="anonymous">
+    <style>
+        body {
+            background-color: #f7f9fc;
+        }
+        .navbar-brand {
+            font-weight: 600;
+            letter-spacing: 0.05rem;
+        }
+        .card {
+            border: none;
+            box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.08);
+        }
+        table th {
+            white-space: nowrap;
+        }
+        .table-responsive {
+            max-height: 65vh;
+        }
+        footer {
+            font-size: 0.875rem;
+            color: #6c757d;
+        }
+    </style>
+    {% block head_scripts %}{% endblock %}
+</head>
+<body>
+<nav class="navbar navbar-expand-lg navbar-light bg-light border-bottom mb-4">
+    <div class="container-fluid">
+        <a class="navbar-brand" href="{{ url_for('index') }}">ASX Strategies</a>
+        <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+            <span class="navbar-toggler-icon"></span>
+        </button>
+        <div class="collapse navbar-collapse" id="navbarNav">
+            <ul class="navbar-nav ms-auto">
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('index') }}">Summary</a></li>
+                <li class="nav-item"><a class="nav-link" href="{{ url_for('signals') }}">Signals</a></li>
+            </ul>
+        </div>
+    </div>
+</nav>
+<main class="container mb-5">
+    {% with messages = get_flashed_messages() %}
+        {% if messages %}
+            <div class="alert alert-warning" role="alert">
+                {% for message in messages %}
+                    <div>{{ message }}</div>
+                {% endfor %}
+            </div>
+        {% endif %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+</main>
+<footer class="text-center py-4">
+    Updated {{ last_refreshed|default('n/a') }}
+</footer>
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js" integrity="sha384-y6ogn5Ge0XEt3G5UpiRaY1oCbcnZ6+QcmGeXjr6UIK/Y/xFdVtOfvtTDHkJNNZ4c" crossorigin="anonymous"></script>
+<script src="https://cdn.plot.ly/plotly-2.26.0.min.js" defer></script>
+{% block body_scripts %}{% endblock %}
+</body>
+</html>

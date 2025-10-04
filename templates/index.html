@@ -1,0 +1,63 @@
+{% extends "layout.html" %}
+{% block title %}Strategy Summary - ASX Strategies Dashboard{% endblock %}
+{% block content %}
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <div>
+        <h1 class="h3 mb-1">Strategy Performance Overview</h1>
+        <p class="text-muted mb-0">Aggregated view of strategies sourced from CSV summaries.</p>
+    </div>
+    <a class="btn btn-outline-primary" href="{{ url_for('signals') }}">View Signals</a>
+</div>
+{% if summaries %}
+    <div class="row gy-4">
+        {% for summary in summaries %}
+            <div class="col-12 col-lg-6">
+                <div class="card h-100">
+                    <div class="card-body">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                            <div>
+                                <h2 class="h5 mb-0">{{ summary.display_name }}</h2>
+                                <small class="text-muted">Source: {{ summary.source.name }}</small>
+                            </div>
+                            {% if summary.numeric_snapshot %}
+                                <div class="text-end">
+                                    {% for label, value in summary.numeric_snapshot.items() %}
+                                        <div class="small text-muted">{{ label }}: <span class="fw-semibold">{{ value }}</span></div>
+                                    {% endfor %}
+                                </div>
+                            {% endif %}
+                        </div>
+                        <div class="table-responsive mb-3">
+                            {{ summary.table_html | safe }}
+                        </div>
+                        {% if summary.chart_json %}
+                            <div id="{{ summary.chart_id }}" style="height:320px;"></div>
+                        {% else %}
+                            <div class="alert alert-info small" role="alert">
+                                No numeric data available for charting.
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+{% else %}
+    <div class="alert alert-warning" role="alert">
+        No CSV summaries were found in {{ data_directory }}.
+    </div>
+{% endif %}
+{% endblock %}
+{% block body_scripts %}
+{{ super() }}
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        const chartConfigs = {{ chart_configs | tojson | safe }};
+        chartConfigs.forEach(({id, config}) => {
+            if (config && document.getElementById(id)) {
+                Plotly.newPlot(id, config.data, config.layout, {responsive: true, displayModeBar: false});
+            }
+        });
+    });
+</script>
+{% endblock %}
