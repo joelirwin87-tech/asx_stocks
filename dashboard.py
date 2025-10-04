@@ -87,7 +87,7 @@ def build_plotly_config(df: pd.DataFrame, title: str) -> Optional[Dict[str, Any]
                 y=numeric_df[col],
                 mode="lines+markers",
                 name=col,
-                hovertemplate="%{y:.4f}<extra>{}</extra>".format(col),
+                hovertemplate=f"%{{y:.4f}}<extra>{col}</extra>",
             )
         )
 
