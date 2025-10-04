@@ -25,31 +25,33 @@ Features
 
 Installation
 
-# Clone the repo
+Clone the repo
 git clone https://github.com/joelirwin87-tech/asx_stocks.git
 cd asx_stocks
 
-# Create virtual environment
+Create virtual environment
 python3 -m venv venv
 source venv/bin/activate
 
-# Install dependencies
+Install dependencies
 pip install -r requirements.txt
 
-# Verify
+Verify
 PYTHONPATH=. pytest tests/
 
 Usage
-# Run the daily pipeline:
+
+Run the daily pipeline:
 python run_daily.py
 
-# Start the dashboard:
+Start the dashboard:
 python dashboard.py
 
-# Then open your browser at:
+Then open your browser at:
 http://127.0.0.1:5000
 
 Configuration
+
 Edit config.json to set tickers, start date, capital, and profit targets.
 Example:
 {
@@ -58,23 +60,24 @@ Example:
   "capital": 10000,
   "tp_percents": [0.03, 0.05]
 }
-Directory Structure
 
+Directory Structure
 
 asx_stocks/
 │
-├── data/              		# Price and trades CSVs
-├── db/                		# SQLite signals.db
-├── tests/            		# Integration and strategy tests
-├── alerts.py          		# Alert generation + DB persistence
-├── backtester.py      	# Trade simulation engine
-├── data_fetcher.py  		# Yahoo Finance integration
-├── dashboard.py      	# Flask app with Bootstrap + Plotly
-├── run_daily.py     		# Orchestrates full daily pipeline
-└── config.json   		# User configuration
+├── data/              		Price and trades CSVs
+├── db/                		SQLite signals.db
+├── tests/            		Integration and strategy tests
+├── alerts.py          		Alert generation + DB persistence
+├── backtester.py        	Trade simulation engine
+├── data_fetcher.py  		  Yahoo Finance integration
+├── dashboard.py      	  Flask app with Bootstrap + Plotly
+├── run_daily.py     		  Orchestrates full daily pipeline
+└── config.json   		    User configuration
 
 
 Next Steps
+
 Extend with stop-loss handling
 
 
