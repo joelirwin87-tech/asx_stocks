@@ -5,7 +5,7 @@ import json
 import sys
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Iterable, List
+from typing import Iterable, List, Tuple
 
 import pandas as pd
 import yfinance as yf
@@ -15,6 +15,15 @@ CONFIG_FILE = Path(__file__).resolve().parent / "config.json"
 DATA_DIR = Path(__file__).resolve().parent / "data"
 DATE_FORMAT = "%Y-%m-%d"
 DEFAULT_START_DATE = datetime(1990, 1, 1)
+EXPECTED_COLUMNS = ["Date", "Open", "High", "Low", "Close", "Volume"]
+CANONICAL_COLUMN_MAP = {
+    "date": "Date",
+    "open": "Open",
+    "high": "High",
+    "low": "Low",
+    "close": "Close",
+    "volume": "Volume",
+}
 
 
 def load_config(config_path: Path) -> dict:
@@ -60,23 +69,91 @@ def ensure_data_directory(directory: Path) -> None:
         raise OSError(f"Unable to create data directory at {directory}: {exc}") from exc
 
 
-def read_existing_data(csv_path: Path) -> pd.DataFrame:
-    """Read existing CSV data if available."""
+def _canonicalize_column_name(column: object) -> str:
+    """Return a canonical column name for price data."""
+
+    if isinstance(column, tuple):
+        column = column[0]
+
+    column_str = str(column).strip()
+
+    if column_str.startswith("(") and column_str.endswith(")"):
+        inner = column_str[1:-1]
+        parts = [part.strip() for part in inner.split(",")]
+        if parts:
+            column_str = parts[0].strip("'\"")
+
+    normalized_key = column_str.lower().replace(" ", "_")
+    base_key = normalized_key.split("_")[0].split(".")[0]
+
+    if base_key in CANONICAL_COLUMN_MAP:
+        return CANONICAL_COLUMN_MAP[base_key]
+
+    return column_str
+
+
+def normalize_price_dataframe(data_frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize a raw dataframe from CSV or yfinance into the expected schema."""
+
+    if data_frame.empty:
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
+
+    normalized = data_frame.copy()
+
+    if isinstance(normalized.columns, pd.MultiIndex):
+        normalized.columns = [
+            entry[0] if isinstance(entry, tuple) else entry
+            for entry in normalized.columns.to_flat_index()
+        ]
+
+    normalized.columns = [_canonicalize_column_name(col) for col in normalized.columns]
+
+    if "Date" not in normalized.columns and "Datetime" in normalized.columns:
+        normalized.rename(columns={"Datetime": "Date"}, inplace=True)
+
+    if "Date" not in normalized.columns and "index" in normalized.columns:
+        normalized.rename(columns={"index": "Date"}, inplace=True)
+
+    missing_columns = [column for column in EXPECTED_COLUMNS if column not in normalized.columns]
+    if missing_columns:
+        raise ValueError(f"Dataframe is missing required columns: {missing_columns}")
+
+    normalized = normalized[EXPECTED_COLUMNS].copy()
+
+    normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce", utc=True)
+    normalized.dropna(subset=["Date"], inplace=True)
+    normalized["Date"] = normalized["Date"].dt.tz_convert(None)
+
+    for column in EXPECTED_COLUMNS[1:]:
+        normalized[column] = pd.to_numeric(normalized[column], errors="coerce")
+
+    normalized.sort_values(by="Date", inplace=True)
+    normalized.drop_duplicates(subset=["Date"], keep="last", inplace=True)
+    normalized["Date"] = normalized["Date"].dt.strftime(DATE_FORMAT)
+    normalized.reset_index(drop=True, inplace=True)
+
+    return normalized
+
+
+def read_existing_data(csv_path: Path) -> Tuple[pd.DataFrame, bool]:
+    """Read existing CSV data if available, returning data and whether it needs resaving."""
+
     if not csv_path.exists():
-        return pd.DataFrame(columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+        return pd.DataFrame(columns=EXPECTED_COLUMNS), False
 
     try:
-        data_frame = pd.read_csv(csv_path, parse_dates=["Date"], dtype={"Volume": "Int64"})
+        raw_data = pd.read_csv(csv_path)
     except (pd.errors.ParserError, ValueError) as exc:
         raise ValueError(f"Failed to read existing data from {csv_path}: {exc}") from exc
 
-    expected_columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
-    if list(data_frame.columns) != expected_columns:
-        raise ValueError(
-            f"Unexpected columns in {csv_path}. Expected {expected_columns}, got {list(data_frame.columns)}"
-        )
+    try:
+        normalized = normalize_price_dataframe(raw_data)
+    except ValueError as exc:
+        raise ValueError(f"Existing data at {csv_path} is invalid: {exc}") from exc
 
-    return data_frame
+    needs_resave = list(raw_data.columns) != EXPECTED_COLUMNS or not raw_data.equals(normalized)
+
+    return normalized, needs_resave
 
 
 def determine_fetch_start_date(existing_data: pd.DataFrame, config_start_date: datetime) -> datetime:
@@ -84,10 +161,11 @@ def determine_fetch_start_date(existing_data: pd.DataFrame, config_start_date: d
     if existing_data.empty:
         return config_start_date
 
-    last_date = existing_data["Date"].max()
-    if pd.isna(last_date):
+    parsed_dates = pd.to_datetime(existing_data["Date"], errors="coerce")
+    if parsed_dates.isna().all():
         return config_start_date
 
+    last_date = parsed_dates.max()
     next_day = last_date + timedelta(days=1)
     return max(next_day.to_pydatetime(), config_start_date)
 
@@ -107,66 +185,79 @@ def fetch_new_data(ticker: str, start_date: datetime, end_date: datetime) -> pd.
         raise ConnectionError(f"Failed to download data for {ticker}: {exc}") from exc
 
     if data.empty:
-        return pd.DataFrame(columns=["Date", "Open", "High", "Low", "Close", "Volume"])
+        return pd.DataFrame(columns=EXPECTED_COLUMNS)
 
     data = data.reset_index()
 
-    if "Date" not in data.columns:
-        raise ValueError(f"Downloaded data for {ticker} does not contain 'Date' column.")
+    try:
+        normalized = normalize_price_dataframe(data)
+    except ValueError as exc:
+        raise ValueError(f"Downloaded data for {ticker} is invalid: {exc}") from exc
 
-    filtered_columns = {
-        "Open": "Open",
-        "High": "High",
-        "Low": "Low",
-        "Close": "Close",
-        "Volume": "Volume",
-    }
-
-    missing_columns = [column for column in filtered_columns if column not in data.columns]
-    if missing_columns:
-        raise ValueError(f"Downloaded data for {ticker} is missing columns: {missing_columns}")
-
-    result = data[["Date", *filtered_columns.keys()]].copy()
-    result.rename(columns=filtered_columns, inplace=True)
-    result["Date"] = pd.to_datetime(result["Date"]).dt.tz_localize(None)
-    result["Date"] = result["Date"].dt.strftime(DATE_FORMAT)
-
-    return result
+    return normalized
 
 
-def update_ticker_data(ticker: str, config_start_date: datetime) -> None:
-    """Update CSV data for a single ticker."""
+def save_normalized_data(csv_path: Path, data_frame: pd.DataFrame, ticker: str) -> bool:
+    """Persist a normalized dataframe to disk, logging warnings on failure."""
+
+    try:
+        data_frame.to_csv(csv_path, index=False)
+    except OSError as exc:
+        print(f"WARNING: Failed to update {ticker}: {exc}")
+        return False
+
+    return True
+
+
+def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
+    """Update CSV data for a single ticker.
+
+    Returns True when the ticker data was processed successfully, even if no
+    new rows were added. Returns False when the update failed.
+    """
     csv_path = DATA_DIR / f"{ticker.replace('/', '_')}.csv"
 
-    existing_data = read_existing_data(csv_path)
+    try:
+        existing_data, needs_resave = read_existing_data(csv_path)
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"WARNING: Failed to update {ticker}: {exc}")
+        return False
+
     fetch_start = determine_fetch_start_date(existing_data, config_start_date)
     today = datetime.utcnow()
 
     if fetch_start.date() > today.date():
+        if needs_resave and not save_normalized_data(csv_path, existing_data, ticker):
+            return False
         print(f"{ticker}: data is already up to date.")
-        return
-
-    new_data = fetch_new_data(ticker, fetch_start, today)
-
-    if new_data.empty:
-        print(f"{ticker}: no new data available.")
-        return
-
-    if not existing_data.empty:
-        existing_data["Date"] = pd.to_datetime(existing_data["Date"])
-        existing_data["Date"] = existing_data["Date"].dt.strftime(DATE_FORMAT)
-
-    combined = pd.concat([existing_data, new_data], ignore_index=True)
-    combined.drop_duplicates(subset=["Date"], keep="last", inplace=True)
-    combined.sort_values(by="Date", inplace=True)
+        return True
 
     try:
-        combined.to_csv(csv_path, index=False)
-    except OSError as exc:
-        raise OSError(f"Failed to write data to {csv_path}: {exc}") from exc
+        new_data = fetch_new_data(ticker, fetch_start, today)
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"WARNING: Failed to update {ticker}: {exc}")
+        return False
+
+    if new_data.empty:
+        if needs_resave and not save_normalized_data(csv_path, existing_data, ticker):
+            return False
+        print(f"{ticker}: no new data available.")
+        return True
+
+    combined = pd.concat([existing_data, new_data], ignore_index=True)
+    try:
+        combined = normalize_price_dataframe(combined)
+    except ValueError as exc:
+        print(f"WARNING: Failed to update {ticker}: {exc}")
+        return False
+
+    if not save_normalized_data(csv_path, combined, ticker):
+        return False
 
     new_rows = len(combined) - len(existing_data)
     print(f"{ticker}: data updated with {new_rows} new row(s).")
+
+    return True
 
 
 def main() -> None:
@@ -177,11 +268,19 @@ def main() -> None:
         tickers: Iterable[str] = config["tickers"]
         start_date: datetime = config["start_date"]
 
+        success_count = 0
+        failure_count = 0
+
         for ticker in tickers:
             try:
-                update_ticker_data(ticker, start_date)
+                if update_ticker_data(ticker, start_date):
+                    success_count += 1
+                else:
+                    failure_count += 1
             except Exception as exc:  # pylint: disable=broad-except
-                print(f"Error updating {ticker}: {exc}")
+                print(f"WARNING: Failed to update {ticker}: {exc}")
+                failure_count += 1
+        print(f"Data update complete with {success_count} success, {failure_count} failed")
     except Exception as exc:  # pylint: disable=broad-except
         print(f"Fatal error: {exc}")
         sys.exit(1)
