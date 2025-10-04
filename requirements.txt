@@ -1,0 +1,9 @@
+pandas
+numpy
+yfinance
+flask
+matplotlib
+plotly
+sqlalchemy
+apscheduler
+pytest
