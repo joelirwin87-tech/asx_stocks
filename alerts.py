@@ -377,9 +377,12 @@ def _coalesce_numeric(*values: Any) -> Optional[float]:
     return None
 
 
-def _ensure_database(path: Path) -> sqlite3.Connection:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(path)
+def ensure_alerts_database(path: Path | str = DEFAULT_DB_PATH) -> sqlite3.Connection:
+    """Ensure the alerts database exists with the expected schema."""
+
+    db_path = Path(path)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    connection = sqlite3.connect(db_path)
     connection.execute(
         """
         CREATE TABLE IF NOT EXISTS alerts (
@@ -401,7 +404,7 @@ def _persist_alerts(alerts: Sequence[Alert], db_path: Path = DEFAULT_DB_PATH) ->
     if not alerts:
         return
 
-    with _ensure_database(db_path) as conn:
+    with ensure_alerts_database(db_path) as conn:
         conn.executemany(
             """
             INSERT OR IGNORE INTO alerts (
@@ -455,7 +458,8 @@ def generate_and_store_alerts(
 
     if not data_frames:
         LOGGER.info("No data available for alert generation")
-        _ensure_database(Path(db_path))
+        with ensure_alerts_database(db_path) as connection:
+            connection.commit()
         return []
 
     backtester_module = _load_backtester(backtester)
@@ -498,7 +502,7 @@ def get_active_alerts(
 
     if not db_path.exists():
         LOGGER.info("Alert database not found at %s", db_path)
-        with _ensure_database(db_path) as connection:
+        with ensure_alerts_database(db_path) as connection:
             connection.commit()
         return pd.DataFrame(
             columns=["date", "ticker", "strategy", "entry_price", "target_price", "stop_loss"]

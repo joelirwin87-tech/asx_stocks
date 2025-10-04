@@ -141,17 +141,25 @@ def test_dashboard_routes_respond(tmp_path: Path) -> None:
     trades_df = _sample_ohlcv(5)
     trades_df.to_csv(data_dir / "CBA.AX.csv", index=False)
 
-    with alerts._ensure_database(db_path) as connection:  # type: ignore[attr-defined]
+    with alerts.ensure_alerts_database(db_path) as connection:
         connection.execute(
             """
             INSERT OR IGNORE INTO alerts (date, ticker, strategy, entry_price, target_price, stop_loss)
             VALUES (?, ?, ?, ?, ?, ?)
             """,
-            ("2024-01-05", "CBA.AX", "sma_cross", 105.0, 110.0, 100.0),
+            (
+                datetime.now().date().isoformat(),
+                "CBA.AX",
+                "sma_cross",
+                105.0,
+                110.0,
+                100.0,
+            ),
         )
         connection.commit()
 
-    app = dashboard.configure_app()
+    app = dashboard.app
+    original_config = app.config.copy()
     app.config.update(
         TESTING=True,
         DATA_DIRECTORY=data_dir,
@@ -161,12 +169,20 @@ def test_dashboard_routes_respond(tmp_path: Path) -> None:
 
     dashboard.ensure_runtime_directories(data_dir, db_path)
 
-    with app.test_client() as client:
-        response = client.get("/")
-        assert response.status_code == 200
+    try:
+        with app.test_client() as client:
+            response = client.get("/")
+            assert response.status_code == 200
 
-        response = client.get("/signals")
-        assert response.status_code == 200
+            response = client.get("/signals")
+            assert response.status_code == 200
+            page = response.get_data(as_text=True)
+            assert "table table-striped table-sm align-middle" in page
+            assert "CBA.AX" in page
+            assert "sma_cross" in page
 
-        response = client.get("/trades/CBA.AX")
-        assert response.status_code == 200
+            response = client.get("/trades/CBA.AX")
+            assert response.status_code == 200
+    finally:
+        app.config.clear()
+        app.config.update(original_config)
