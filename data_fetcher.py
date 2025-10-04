@@ -84,6 +84,24 @@ def ensure_data_directory(directory: Path) -> None:
         raise OSError(f"Unable to create data directory at {directory}: {exc}") from exc
 
 
+def _parse_normalized_dates(series: pd.Series) -> pd.Series:
+    """Parse date strings consistently while avoiding pandas cache warnings."""
+
+    if series.empty:
+        return pd.to_datetime([], utc=True)
+
+    parsed = pd.to_datetime(series, format=DATE_FORMAT, errors="coerce", utc=True)
+
+    needs_fallback = parsed.isna() & series.notna()
+    if needs_fallback.any():
+        fallback_series = series[needs_fallback].apply(
+            lambda value: pd.to_datetime(value, errors="coerce", utc=True, cache=False)
+        )
+        parsed.loc[needs_fallback] = fallback_series
+
+    return parsed
+
+
 def _canonicalize_column_name(column: object) -> str:
     """Return a canonical column name for price data."""
 
@@ -174,7 +192,7 @@ def normalize_price_dataframe(data_frame: pd.DataFrame) -> pd.DataFrame:
 
     normalized = normalized[EXPECTED_COLUMNS].copy()
 
-    normalized["Date"] = pd.to_datetime(normalized["Date"], errors="coerce", utc=True)
+    normalized["Date"] = _parse_normalized_dates(normalized["Date"])
     normalized.dropna(subset=["Date"], inplace=True)
     normalized["Date"] = normalized["Date"].dt.tz_convert(None)
 
@@ -215,7 +233,7 @@ def determine_fetch_start_date(existing_data: pd.DataFrame, config_start_date: d
     if existing_data.empty:
         return config_start_date
 
-    parsed_dates = pd.to_datetime(existing_data["Date"], errors="coerce")
+    parsed_dates = _parse_normalized_dates(existing_data["Date"]).dt.tz_convert(None)
     if parsed_dates.isna().all():
         return config_start_date
 
@@ -299,8 +317,8 @@ def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
         return True
 
     if not existing_data.empty:
-        existing_data["Date"] = pd.to_datetime(existing_data["Date"])
-        existing_data["Date"] = existing_data["Date"].dt.strftime(DATE_FORMAT)
+        parsed_existing_dates = _parse_normalized_dates(existing_data["Date"]).dt.tz_convert(None)
+        existing_data["Date"] = parsed_existing_dates.dt.strftime(DATE_FORMAT)
 
     combined = pd.concat([existing_data, new_data], ignore_index=True)
     try:
