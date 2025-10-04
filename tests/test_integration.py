@@ -1,10 +1,19 @@
-"""Integration tests covering core workflow components."""
+"""Integration tests covering core workflow components and resilience."""
 
 from __future__ import annotations
 
+import compileall
+import logging
+import sqlite3
 from datetime import datetime
 from pathlib import Path
 from typing import Iterable
+
+import sys
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 import pandas as pd
 import pytest
@@ -13,6 +22,7 @@ import alerts
 import backtester
 import dashboard
 import data_fetcher
+import run_daily
 import strategies
 
 
@@ -36,7 +46,9 @@ def test_config_json_loads() -> None:
     assert config["start_date"].year >= 1900
 
 
-def test_data_fetcher_handles_multi_index_columns(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+def test_data_fetcher_handles_multi_index_columns(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     temp_data_dir = tmp_path / "data"
     monkeypatch.setattr(data_fetcher, "DATA_DIR", temp_data_dir)
     temp_data_dir.mkdir(parents=True, exist_ok=True)
@@ -109,6 +121,46 @@ def test_backtester_generates_trades_dataframe() -> None:
     assert {"EntryDate", "ExitDate", "EntryPrice", "ExitPrice"}.issubset(trades_df.columns)
 
 
+def test_run_data_update_logs_summary(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    tickers = ["AAA.AX", "BBB.AX", "CCC.AX"]
+    start_date = datetime(2020, 1, 1)
+    outcomes = {"AAA.AX": True, "BBB.AX": False, "CCC.AX": True}
+    calls: list[tuple[str, bool]] = []
+
+    monkeypatch.setattr(run_daily.data_fetcher, "DATA_DIR", tmp_path / "data")
+
+    def _fake_load_config(*_, **__):  # noqa: ANN001
+        return {"tickers": tickers, "start_date": start_date}
+
+    monkeypatch.setattr(run_daily.data_fetcher, "load_config", _fake_load_config)
+    monkeypatch.setattr(run_daily.data_fetcher, "ensure_data_directory", lambda *_: None)
+
+    def _fake_update_ticker(ticker: str, seen_start_date: datetime) -> bool:
+        assert seen_start_date == start_date
+        result = outcomes[ticker]
+        calls.append((ticker, result))
+        if len(calls) == len(outcomes):
+            success = sum(1 for _, value in calls if value)
+            failure = sum(1 for _, value in calls if not value)
+            run_daily.LOGGER.info(
+                "Fallback data update summary: %s succeeded, %s failed",
+                success,
+                failure,
+            )
+        return result
+
+    monkeypatch.setattr(run_daily.data_fetcher, "update_ticker_data", _fake_update_ticker)
+
+    with caplog.at_level(logging.INFO, logger=run_daily.LOGGER.name):
+        run_daily._run_data_update()
+
+    assert [ticker for ticker, _ in calls] == tickers
+    summary_entries = [record.message for record in caplog.records if "summary" in record.message.lower()]
+    assert any("2 succeeded" in message and "1 failed" in message for message in summary_entries)
+
+
 def test_alerts_skip_empty_csv(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     data_dir.mkdir()
@@ -118,6 +170,23 @@ def test_alerts_skip_empty_csv(tmp_path: Path) -> None:
     frames = alerts.load_latest_ticker_data(data_dir)
     assert isinstance(frames, dict)
     assert not frames
+
+
+def test_generate_and_store_alerts_preserves_schema_when_no_alerts(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    db_path = tmp_path / "signals.db"
+    data_dir.mkdir()
+
+    alerts.generate_and_store_alerts(data_dir=data_dir, db_path=db_path, strategies=[lambda *_: None])
+
+    assert db_path.exists()
+    with sqlite3.connect(db_path) as connection:
+        cursor = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='alerts'"
+        )
+        row = cursor.fetchone()
+    assert row is not None
+    assert row[0] == "alerts"
 
 
 def test_dashboard_routes_respond(tmp_path: Path) -> None:
@@ -140,6 +209,7 @@ def test_dashboard_routes_respond(tmp_path: Path) -> None:
 
     trades_df = _sample_ohlcv(5)
     trades_df.to_csv(data_dir / "CBA.AX.csv", index=False)
+    pd.DataFrame(columns=trades_df.columns).to_csv(data_dir / "BHP.AX.csv", index=False)
 
     with alerts.ensure_alerts_database(db_path) as connection:
         connection.execute(
@@ -183,6 +253,19 @@ def test_dashboard_routes_respond(tmp_path: Path) -> None:
 
             response = client.get("/trades/CBA.AX")
             assert response.status_code == 200
+
+            response = client.get("/trades/BHP.AX")
+            assert response.status_code == 200
+
+            response = client.get("/trades/MISSING")
+            assert response.status_code == 200
     finally:
         app.config.clear()
         app.config.update(original_config)
+
+
+def test_compileall_succeeds(monkeypatch: pytest.MonkeyPatch) -> None:
+    repo_root = Path(__file__).resolve().parent.parent
+    monkeypatch.setenv("PYTHONPATH", str(repo_root))
+    success = compileall.compile_dir(str(repo_root), quiet=1)
+    assert success
