@@ -158,7 +158,7 @@ def test_dashboard_routes_respond(tmp_path: Path) -> None:
         )
         connection.commit()
 
-    app = dashboard.app
+    app = dashboard.create_app()
     original_config = app.config.copy()
     app.config.update(
         TESTING=True,

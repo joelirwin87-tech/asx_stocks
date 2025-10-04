@@ -426,16 +426,6 @@ def _print_alerts(alerts: Iterable[Alert]) -> None:
             "-" if alert.target_price is None else f"{alert.target_price:.4f}",
             "-" if alert.stop_loss is None else f"{alert.stop_loss:.4f}",
         )
-        print(
-            {
-                "Date": alert.run_date.isoformat(),
-                "Ticker": alert.ticker,
-                "Strategy": alert.strategy,
-                "EntryPrice": alert.entry_price,
-                "TargetPrice": alert.target_price,
-                "StopLoss": alert.stop_loss,
-            }
-        )
 
 
 def generate_and_store_alerts(
