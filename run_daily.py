@@ -14,6 +14,33 @@ from strategies import build_default_strategies
 
 LOGGER = logging.getLogger(__name__)
 
+DEFAULT_TAKE_PROFIT_PCT = 0.08
+DEFAULT_STOP_LOSS_PCT = 0.04
+
+
+def _resolve_percentage_setting(
+    config: Dict[str, object],
+    key: str,
+    default: float,
+) -> float:
+    """Return a validated percentage value for the given configuration key."""
+
+    if key in config:
+        value = config[key]
+    else:
+        LOGGER.info("%s not provided in config; using default %.2f", key, default)
+        value = default
+
+    try:
+        percentage = float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError) as exc:  # pragma: no cover - defensive
+        raise ValueError(f"{key} must be a numeric value") from exc
+
+    if percentage <= 0:
+        raise ValueError(f"{key} must be positive; received {percentage}")
+
+    return percentage
+
 
 def orchestrate(config_path: str = "config.json") -> Dict[str, int]:
     config = load_config(config_path)
@@ -54,11 +81,18 @@ def orchestrate(config_path: str = "config.json") -> Dict[str, int]:
         else pd.DataFrame(columns=["Date", "Ticker", "Signal", "Price", "Strategy"])
     )
 
+    take_profit_pct = _resolve_percentage_setting(
+        config, "take_profit_pct", DEFAULT_TAKE_PROFIT_PCT
+    )
+    stop_loss_pct = _resolve_percentage_setting(
+        config, "stop_loss_pct", DEFAULT_STOP_LOSS_PCT
+    )
+
     backtester = Backtester(
         capital=float(config["capital"]),
         risk_per_trade=float(config.get("risk_per_trade", 0.02)),
-        take_profit_pct=float(config["take_profit_pct"]),
-        stop_loss_pct=float(config["stop_loss_pct"]),
+        take_profit_pct=take_profit_pct,
+        stop_loss_pct=stop_loss_pct,
     )
     trades_df, summary_df = backtester.run(price_data, signals_df)
 
