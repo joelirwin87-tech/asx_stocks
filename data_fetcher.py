@@ -134,8 +134,12 @@ def fetch_new_data(ticker: str, start_date: datetime, end_date: datetime) -> pd.
     return result
 
 
-def update_ticker_data(ticker: str, config_start_date: datetime) -> None:
-    """Update CSV data for a single ticker."""
+def update_ticker_data(ticker: str, config_start_date: datetime) -> bool:
+    """Update CSV data for a single ticker.
+
+    Returns True when the ticker data was processed successfully, even if no
+    new rows were added. Returns False when the update failed.
+    """
     csv_path = DATA_DIR / f"{ticker.replace('/', '_')}.csv"
 
     existing_data = read_existing_data(csv_path)
@@ -144,13 +148,17 @@ def update_ticker_data(ticker: str, config_start_date: datetime) -> None:
 
     if fetch_start.date() > today.date():
         print(f"{ticker}: data is already up to date.")
-        return
+        return True
 
-    new_data = fetch_new_data(ticker, fetch_start, today)
+    try:
+        new_data = fetch_new_data(ticker, fetch_start, today)
+    except Exception as exc:  # pylint: disable=broad-except
+        print(f"WARNING: Failed to update {ticker}: {exc}")
+        return False
 
     if new_data.empty:
         print(f"{ticker}: no new data available.")
-        return
+        return True
 
     if not existing_data.empty:
         existing_data["Date"] = pd.to_datetime(existing_data["Date"])
@@ -163,10 +171,13 @@ def update_ticker_data(ticker: str, config_start_date: datetime) -> None:
     try:
         combined.to_csv(csv_path, index=False)
     except OSError as exc:
-        raise OSError(f"Failed to write data to {csv_path}: {exc}") from exc
+        print(f"WARNING: Failed to update {ticker}: {exc}")
+        return False
 
     new_rows = len(combined) - len(existing_data)
     print(f"{ticker}: data updated with {new_rows} new row(s).")
+
+    return True
 
 
 def main() -> None:
@@ -177,11 +188,19 @@ def main() -> None:
         tickers: Iterable[str] = config["tickers"]
         start_date: datetime = config["start_date"]
 
+        success_count = 0
+        failure_count = 0
+
         for ticker in tickers:
             try:
-                update_ticker_data(ticker, start_date)
+                if update_ticker_data(ticker, start_date):
+                    success_count += 1
+                else:
+                    failure_count += 1
             except Exception as exc:  # pylint: disable=broad-except
-                print(f"Error updating {ticker}: {exc}")
+                print(f"WARNING: Failed to update {ticker}: {exc}")
+                failure_count += 1
+        print(f"Data update complete with {success_count} success, {failure_count} failed")
     except Exception as exc:  # pylint: disable=broad-except
         print(f"Fatal error: {exc}")
         sys.exit(1)
