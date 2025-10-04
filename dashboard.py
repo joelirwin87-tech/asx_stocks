@@ -5,7 +5,7 @@ import logging
 import os
 import sqlite3
 import uuid
-from datetime import datetime, date
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -348,8 +348,10 @@ def load_strategy_summaries(data_dir: Path) -> List[Dict[str, Any]]:
 
 
 def read_database(db_path: Path) -> Optional[pd.DataFrame]:
-    if not db_path.exists():
-        logger.warning("Signals database not found at %s", db_path)
+    try:
+        ensure_signals_database(db_path)
+    except Exception:
+        logger.error("Signals database could not be ensured at %s", db_path)
         return None
     try:
         with sqlite3.connect(db_path) as connection:
