@@ -29,39 +29,6 @@ def ensure_runtime_directories(data_dir: Path, db_path: Path) -> None:
             logger.debug("Unable to create directory %s: %s", directory, exc)
 
 
-def ensure_signals_database(db_path: Path) -> Path:
-    """Guarantee that the signals database exists with the expected schema."""
-
-    db_path = Path(db_path)
-    try:
-        db_path.parent.mkdir(parents=True, exist_ok=True)
-    except OSError as exc:  # pragma: no cover - diagnostics
-        logger.error("Unable to create database directory %s: %s", db_path.parent, exc)
-        raise
-
-    try:
-        with sqlite3.connect(db_path) as connection:
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS alerts (
-                    date TEXT NOT NULL,
-                    ticker TEXT NOT NULL,
-                    strategy TEXT NOT NULL,
-                    entry_price REAL NOT NULL,
-                    target_price REAL,
-                    stop_loss REAL,
-                    PRIMARY KEY (date, ticker, strategy)
-                )
-                """
-            )
-            connection.commit()
-    except sqlite3.Error as exc:
-        logger.error("Failed to initialise signals database %s: %s", db_path, exc)
-        raise
-
-    return db_path
-
-
 def build_trade_navigation(data_dir: Path) -> List[Tuple[str, str]]:
     if not data_dir.exists():
         return []
@@ -209,10 +176,6 @@ def configure_app() -> Flask:
     data_directory = Path(os.environ.get("DATA_DIRECTORY", str(DATA_DIR)))
     db_path = Path(os.environ.get("SIGNALS_DB_PATH", str(DEFAULT_DB_PATH)))
     ensure_runtime_directories(data_directory, db_path)
-    try:
-        ensure_signals_database(db_path)
-    except Exception:
-        logger.exception("Unable to ensure signals database at %s", db_path)
     app.config["DATA_DIRECTORY"] = data_directory
     app.config["DB_PATH"] = db_path
     return app
