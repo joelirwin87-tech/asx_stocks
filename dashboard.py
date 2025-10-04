@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
-from flask import Flask, flash, render_template, url_for
+from flask import Flask, flash, render_template, url_for, current_app
 
 from alerts import ensure_alerts_database
 
@@ -180,27 +180,130 @@ def configure_app() -> Flask:
     ensure_runtime_directories(data_directory, db_path)
     app.config["DATA_DIRECTORY"] = data_directory
     app.config["DB_PATH"] = db_path
+    register_routes(app)
     return app
 
 
+def register_routes(app: Flask) -> None:
+    """Attach context processors and routes to the provided Flask application."""
+
+    if getattr(app, "_dashboard_routes_registered", False):
+        return
+
+    @app.context_processor
+    def inject_last_refreshed() -> Dict[str, str]:
+        links = []
+        data_directory: Path = current_app.config.get("DATA_DIRECTORY", DATA_DIR)
+        for identifier, label in build_trade_navigation(Path(data_directory)):
+            try:
+                link_url = url_for("trades", ticker=identifier)
+            except Exception:  # pragma: no cover - url build defensive guard
+                link_url = "#"
+            links.append({"label": label, "url": link_url, "identifier": identifier})
+
+        return {
+            "last_refreshed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "trade_nav_links": links,
+        }
+
+    @app.route("/")
+    def index():
+        data_directory: Path = current_app.config.get("DATA_DIRECTORY", DATA_DIR)
+        raw_summaries = load_strategy_summaries(data_directory)
+        equity_curve_chart = build_equity_curve_chart(raw_summaries)
+        trades_chart = build_trades_per_strategy_chart(raw_summaries)
+        equity_chart_id = f"equity-chart-{uuid.uuid4().hex}" if equity_curve_chart else None
+        trades_chart_id = f"trades-chart-{uuid.uuid4().hex}" if trades_chart else None
+
+        chart_configs = [
+            {"id": summary["chart_id"], "config": summary["chart_json"]}
+            for summary in raw_summaries
+            if summary.get("chart_json")
+        ]
+
+        if equity_curve_chart and equity_chart_id:
+            chart_configs.append({"id": equity_chart_id, "config": equity_curve_chart})
+        if trades_chart and trades_chart_id:
+            chart_configs.append({"id": trades_chart_id, "config": trades_chart})
+
+        summaries: List[Dict[str, Any]] = []
+        for summary in raw_summaries:
+            trimmed = summary.copy()
+            trimmed.pop("dataframe", None)
+            summaries.append(trimmed)
+
+        return render_template(
+            "index.html",
+            summaries=summaries,
+            chart_configs=chart_configs,
+            data_directory=data_directory,
+            equity_curve_chart=equity_curve_chart,
+            trades_chart=trades_chart,
+            equity_chart_id=equity_chart_id,
+            trades_chart_id=trades_chart_id,
+        )
+
+    @app.route("/signals")
+    def signals():
+        db_path: Path = current_app.config.get("DB_PATH", DEFAULT_DB_PATH)
+        df = read_database(db_path)
+        if df is None:
+            flash("Signals database could not be read. Please verify the connection.")
+            df = pd.DataFrame()
+        today = datetime.now().date()
+        today_signals = filter_signals_for_today(df, today)
+        return render_template("signals.html", signals_df=today_signals)
+
+    @app.route("/trades/<string:ticker>")
+    def trades(ticker: str):
+        ticker = ticker.upper()
+        data_directory: Path = current_app.config.get("DATA_DIRECTORY", DATA_DIR)
+        file_path = locate_trade_file(ticker, data_directory)
+        if not file_path:
+            flash(f"No trade history found for {ticker}.")
+            empty_df = pd.DataFrame()
+            return (
+                render_template(
+                    "trades.html",
+                    ticker=ticker,
+                    trades_df=empty_df,
+                    chart_config=None,
+                    data_source=None,
+                    not_found=True,
+                ),
+                200,
+            )
+
+        df = read_csv_file(file_path)
+        if df is None:
+            flash("Unable to read trade data. Please verify the CSV contents.")
+            return (
+                render_template(
+                    "trades.html",
+                    ticker=ticker,
+                    trades_df=pd.DataFrame(),
+                    chart_config=None,
+                    data_source=file_path,
+                    not_found=True,
+                ),
+                200,
+            )
+
+        chart_config = build_plotly_config(df, f"{ticker} Trades")
+        return render_template(
+            "trades.html",
+            ticker=ticker,
+            trades_df=df,
+            chart_config=chart_config,
+            data_source=file_path,
+            not_found=False,
+        )
+
+    app._dashboard_routes_registered = True  # type: ignore[attr-defined]
+
+
 app = configure_app()
-
-
-@app.context_processor
-def inject_last_refreshed() -> Dict[str, str]:
-    links = []
-    data_directory: Path = app.config.get("DATA_DIRECTORY", DATA_DIR)
-    for identifier, label in build_trade_navigation(Path(data_directory)):
-        try:
-            link_url = url_for("trades", ticker=identifier)
-        except Exception:  # pragma: no cover - url build defensive guard
-            link_url = "#"
-        links.append({"label": label, "url": link_url, "identifier": identifier})
-
-    return {
-        "last_refreshed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "trade_nav_links": links,
-    }
+register_routes(app)
 
 
 def humanise_number(value: Any) -> str:
@@ -418,99 +521,6 @@ def locate_trade_file(ticker: str, data_dir: Path) -> Optional[Path]:
             return candidate
     matches = list(data_dir.glob(f"**/*{ticker}*.csv"))
     return matches[0] if matches else None
-
-
-@app.route("/")
-def index():
-    raw_summaries = load_strategy_summaries(app.config["DATA_DIRECTORY"])
-    equity_curve_chart = build_equity_curve_chart(raw_summaries)
-    trades_chart = build_trades_per_strategy_chart(raw_summaries)
-    equity_chart_id = f"equity-chart-{uuid.uuid4().hex}" if equity_curve_chart else None
-    trades_chart_id = f"trades-chart-{uuid.uuid4().hex}" if trades_chart else None
-
-    chart_configs = [
-        {"id": summary["chart_id"], "config": summary["chart_json"]}
-        for summary in raw_summaries
-        if summary.get("chart_json")
-    ]
-
-    if equity_curve_chart and equity_chart_id:
-        chart_configs.append({"id": equity_chart_id, "config": equity_curve_chart})
-    if trades_chart and trades_chart_id:
-        chart_configs.append({"id": trades_chart_id, "config": trades_chart})
-
-    summaries: List[Dict[str, Any]] = []
-    for summary in raw_summaries:
-        trimmed = summary.copy()
-        trimmed.pop("dataframe", None)
-        summaries.append(trimmed)
-
-    return render_template(
-        "index.html",
-        summaries=summaries,
-        chart_configs=chart_configs,
-        data_directory=app.config["DATA_DIRECTORY"],
-        equity_curve_chart=equity_curve_chart,
-        trades_chart=trades_chart,
-        equity_chart_id=equity_chart_id,
-        trades_chart_id=trades_chart_id,
-    )
-
-
-@app.route("/signals")
-def signals():
-    df = read_database(app.config["DB_PATH"])
-    if df is None:
-        flash("Signals database could not be read. Please verify the connection.")
-        df = pd.DataFrame()
-    today = datetime.now().date()
-    today_signals = filter_signals_for_today(df, today)
-    return render_template("signals.html", signals_df=today_signals)
-
-
-@app.route("/trades/<string:ticker>")
-def trades(ticker: str):
-    ticker = ticker.upper()
-    file_path = locate_trade_file(ticker, app.config["DATA_DIRECTORY"])
-    if not file_path:
-        flash(f"No trade history found for {ticker}.")
-        empty_df = pd.DataFrame()
-        return (
-            render_template(
-                "trades.html",
-                ticker=ticker,
-                trades_df=empty_df,
-                chart_config=None,
-                data_source=None,
-                not_found=True,
-            ),
-            200,
-        )
-
-    df = read_csv_file(file_path)
-    if df is None:
-        flash("Unable to read trade data. Please verify the CSV contents.")
-        return (
-            render_template(
-                "trades.html",
-                ticker=ticker,
-                trades_df=pd.DataFrame(),
-                chart_config=None,
-                data_source=file_path,
-                not_found=True,
-            ),
-            200,
-        )
-
-    chart_config = build_plotly_config(df, f"{ticker} Trades")
-    return render_template(
-        "trades.html",
-        ticker=ticker,
-        trades_df=df,
-        chart_config=chart_config,
-        data_source=file_path,
-        not_found=False,
-    )
 
 
 if __name__ == "__main__":
