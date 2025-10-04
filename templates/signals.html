@@ -1,24 +1,41 @@
-{% extends "layout.html" %}
-{% block title %}Signals - ASX Strategies Dashboard{% endblock %}
+{% extends 'base.html' %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <div>
-        <h1 class="h3 mb-1">Today's Signals</h1>
-        <p class="text-muted mb-0">Pulled directly from the alerts database.</p>
-    </div>
-    <a class="btn btn-outline-secondary" href="{{ url_for('index') }}">Back to Summary</a>
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Signals</h1>
+  <a class="btn btn-primary" href="/">Back to Overview</a>
 </div>
 <div class="card">
-    <div class="card-body">
-        {% if not signals_df.empty %}
-            <div class="table-responsive">
-                {{ signals_df.to_html(classes="table table-striped table-sm align-middle", index=False) | safe }}
-            </div>
-        {% else %}
-            <div class="alert alert-info mb-0" role="alert">
-                No alerts were found for today.
-            </div>
-        {% endif %}
-    </div>
+  <div class="card-body">
+    {% if has_alerts %}
+      <div class="table-responsive">
+        <table class="table table-striped table-hover align-middle">
+          <thead class="table-light">
+            <tr>
+              <th scope="col">Ticker</th>
+              <th scope="col">Strategy</th>
+              <th scope="col">Signal Date</th>
+              <th scope="col">Action</th>
+              <th scope="col">Price</th>
+              <th scope="col">Notes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for alert in alerts %}
+            <tr>
+              <th scope="row"><a href="/trades/{{ alert.ticker }}" class="text-decoration-none">{{ alert.ticker }}</a></th>
+              <td>{{ alert.strategy }}</td>
+              <td>{{ alert.signal_date }}</td>
+              <td><span class="badge bg-success">{{ alert.action }}</span></td>
+              <td>{{ alert.price|round(2) }}</td>
+              <td>{{ alert.notes or '-' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="alert alert-info" role="status">No alerts recorded. Run the daily pipeline to capture new trading opportunities.</div>
+    {% endif %}
+  </div>
 </div>
 {% endblock %}

@@ -1,9 +1,6 @@
-pandas
-numpy
-yfinance
-flask
-matplotlib
-plotly
-sqlalchemy
-apscheduler
-pytest
+Flask==3.0.3
+pandas==2.2.2
+plotly==5.21.0
+yfinance==0.2.40
+pytest==8.2.1
+coverage==7.5.4

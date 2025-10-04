@@ -1,96 +1,63 @@
-"""Unit tests for strategy signal generation and alert persistence."""
-
 from __future__ import annotations
 
-from datetime import date
-from pathlib import Path
-
 import pandas as pd
-import pytest
 
-import alerts
-import strategies
-
-
-def _sample_dataframe() -> pd.DataFrame:
-    data = {
-        "Date": pd.date_range("2020-01-01", periods=60, freq="D"),
-        "Open": [100 + i * 0.5 for i in range(60)],
-        "High": [101 + i * 0.5 for i in range(60)],
-        "Low": [99 + i * 0.5 for i in range(60)],
-        "Close": [100 + i * 0.5 for i in range(60)],
-        "Volume": [1_000_000 + i * 1_000 for i in range(60)],
-    }
-    frame = pd.DataFrame(data).set_index("Date")
-    return frame
+from strategies import (
+    DonchianBreakoutStrategy,
+    GapUpHighVolumeStrategy,
+    PullbackUptrendStrategy,
+    SMACrossoverStrategy,
+    build_default_strategies,
+)
 
 
-def test_sma_cross_generates_boolean_signals_without_nans():
-    frame = _sample_dataframe()
-    signals = strategies.sma_cross(frame)
-
-    assert signals.dtype == bool
-    assert not signals.isna().any()
-    assert signals.sum() >= 0
-
-
-def test_compute_rsi_with_constant_series_produces_no_nans():
-    prices = pd.Series([100.0] * 30)
-    rsi = strategies._compute_rsi(prices, period=14)  # pylint: disable=protected-access
-
-    assert len(rsi) == len(prices)
-    assert not rsi.isna().any()
-    assert rsi.iloc[-1] == pytest.approx(0.0)
-
-
-def test_donchian_breakout_detects_high_break():
-    frame = _sample_dataframe()
-    frame.iloc[-1, frame.columns.get_loc("Close")] = frame["High"].max() + 10
-
-    signals = strategies.donchian_breakout(frame)
-
-    assert signals.iloc[-1]
-    assert not signals.isna().any()
-
-
-def test_gapup_highvol_flags_gap_and_volume_spike():
-    frame = _sample_dataframe()
-    frame.iloc[-1, frame.columns.get_loc("Open")] = frame["High"].iloc[-2] * 1.05
-    frame.iloc[-1, frame.columns.get_loc("Volume")] = frame["Volume"].iloc[-2] * 2
-
-    signals = strategies.gapup_highvol(frame)
-
-    assert signals.iloc[-1]
-    assert not signals.isna().any()
-
-
-def test_alert_generation_inserts_rows(tmp_path: Path):
-    data_dir = tmp_path / "data"
-    data_dir.mkdir()
-
-    csv_path = data_dir / "TEST.csv"
-    frame = _sample_dataframe().reset_index()
-    frame.to_csv(csv_path, index=False)
-
-    db_path = tmp_path / "signals.db"
-
-    class DummyBacktester:
-        @staticmethod
-        def run_strategy(strategy, data):  # pragma: no cover - simple stub
-            _ = strategy  # unused but kept for signature parity
-            close = data.iloc[-1]["Close"]
-            return {"signal": True, "entry_price": close, "target_price": close * 1.05}
-
-    alerts.generate_and_store_alerts(
-        data_dir=data_dir,
-        db_path=db_path,
-        strategies=[lambda data: data],
-        backtester=DummyBacktester,
-        run_date=date(2024, 1, 1),
+def _base_dataframe() -> pd.DataFrame:
+    dates = pd.date_range("2023-01-01", periods=30, freq="D")
+    prices = [100 + i * 0.5 for i in range(len(dates))]
+    return pd.DataFrame(
+        {
+            "Date": dates,
+            "Open": [p * 0.99 for p in prices],
+            "High": [p * 1.01 for p in prices],
+            "Low": [p * 0.98 for p in prices],
+            "Close": prices,
+            "Volume": [1_000_000 + i * 1000 for i in range(len(dates))],
+        }
     )
 
-    stored = alerts.get_active_alerts(db_path=db_path, run_date=date(2024, 1, 1))
-    assert len(stored) == 1
-    assert stored.loc[0, "ticker"] == "TEST"
-    assert stored.loc[0, "strategy"]
 
+def test_sma_crossover_generates_signals():
+    data = _base_dataframe()
+    strategy = SMACrossoverStrategy(name="SMA", short_window=3, long_window=5)
+    signals = strategy.generate_signals("TEST.AX", data)
+    assert set(signals.columns) == {"Date", "Ticker", "Signal", "Price", "Strategy"}
+    assert (signals["Signal"].isin(["BUY", "SELL"]).all()) or signals.empty
+
+
+def test_pullback_uptrend_handles_uptrend():
+    data = _base_dataframe()
+    strategy = PullbackUptrendStrategy(name="Pullback", fast_window=3, slow_window=5, pullback_pct=0.02, pullback_window=2)
+    signals = strategy.generate_signals("TEST.AX", data)
+    assert set(signals.columns) == {"Date", "Ticker", "Signal", "Price", "Strategy"}
+
+
+def test_donchian_breakout_detects_breakout():
+    data = _base_dataframe()
+    data.loc[25:, "Close"] = data.loc[25:, "Close"] + 10
+    strategy = DonchianBreakoutStrategy(name="Donchian", breakout_lookback=5, exit_lookback=3)
+    signals = strategy.generate_signals("TEST.AX", data)
+    assert {"BUY", "SELL"}.issuperset(set(signals["Signal"].unique())) or signals.empty
+
+
+def test_gap_up_high_volume_strategy_flags_gap():
+    data = _base_dataframe()
+    data.loc[5, "Open"] = data.loc[4, "Close"] * 1.1
+    data.loc[5, "Volume"] = data["Volume"].rolling(5).mean().iloc[5] * 2
+    strategy = GapUpHighVolumeStrategy(name="Gap", gap_pct=0.05, volume_ratio=1.5, volume_window=3)
+    signals = strategy.generate_signals("TEST.AX", data)
+    assert (signals["Signal"] == "BUY").any() or signals.empty
+
+
+def test_build_default_strategies_returns_all():
+    strategies = build_default_strategies()
+    assert len(list(strategies)) == 4

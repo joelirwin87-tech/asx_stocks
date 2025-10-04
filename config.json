@@ -1,5 +1,28 @@
 {
-   "tickers": ["PTM.AX", "RMS.AX", "CMW.AX", "DYL.AX", "REG.AX", "MSB.AX", "LOT.AX", "EVT.AX", "SLX.AX", "NWH.AX", "RED.AX", "IMD.AX", "ABB.AX", "ELD.AX", "MMS.AX", "WPR.AX", "ARF.AX", "SGM.AX", "DBI.AX", "WEB.AX"],
-
-  "start_date": "2000-01-01"
+  "tickers": ["BHP.AX", "CBA.AX", "CSL.AX"],
+  "start_date": "2015-01-01",
+  "capital": 100000,
+  "risk_per_trade": 0.02,
+  "take_profit_pct": 0.08,
+  "stop_loss_pct": 0.04,
+  "strategies": {
+    "sma_crossover": {
+      "short_window": 10,
+      "long_window": 40
+    },
+    "pullback_uptrend": {
+      "fast_window": 20,
+      "slow_window": 60,
+      "pullback_pct": 0.04
+    },
+    "donchian_breakout": {
+      "breakout_lookback": 20,
+      "exit_lookback": 10
+    },
+    "gap_up_high_volume": {
+      "gap_pct": 0.04,
+      "volume_ratio": 1.8,
+      "volume_window": 30
+    }
+  }
 }
