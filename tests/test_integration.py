@@ -66,6 +66,25 @@ def test_data_fetcher_handles_multi_index_columns(monkeypatch: pytest.MonkeyPatc
     assert not saved.empty
 
 
+def test_normalize_price_dataframe_consolidates_close_columns() -> None:
+    frame = pd.DataFrame(
+        {
+            "Date": ["2024-01-01", "2024-01-02"],
+            "Open": [10.0, 11.0],
+            "High": [10.5, 11.5],
+            "Low": [9.5, 10.5],
+            "Close": [10.25, float("nan")],
+            "Adj Close": [10.2, 11.1],
+            "Volume": [1_000_000, 1_010_000],
+        }
+    )
+
+    normalized = data_fetcher.normalize_price_dataframe(frame)
+
+    assert list(normalized.columns) == data_fetcher.EXPECTED_COLUMNS
+    assert normalized["Close"].tolist() == [10.25, 11.1]
+
+
 def test_strategies_produce_boolean_series() -> None:
     frame = _sample_ohlcv(60).set_index("Date")
     for strategy in (

@@ -138,6 +138,27 @@ def normalize_price_dataframe(data_frame: pd.DataFrame) -> pd.DataFrame:
 
     normalized.columns = [_canonicalize_column_name(col) for col in normalized.columns]
 
+    duplicate_indices_to_remove: list[int] = []
+    for field in EXPECTED_COLUMNS[1:]:
+        matching_indices = [
+            index for index, name in enumerate(normalized.columns) if name == field
+        ]
+        if len(matching_indices) > 1:
+            consolidated = (
+                normalized.iloc[:, matching_indices]
+                .bfill(axis=1)
+                .iloc[:, 0]
+            )
+            normalized.iloc[:, matching_indices[0]] = consolidated
+            duplicate_indices_to_remove.extend(matching_indices[1:])
+
+    if duplicate_indices_to_remove:
+        keep_mask = [
+            index not in duplicate_indices_to_remove
+            for index in range(len(normalized.columns))
+        ]
+        normalized = normalized.iloc[:, keep_mask]
+
     if "Date" not in normalized.columns and "Datetime" in normalized.columns:
         normalized.rename(columns={"Datetime": "Date"}, inplace=True)
 
