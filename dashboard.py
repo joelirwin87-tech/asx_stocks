@@ -5,13 +5,13 @@ import logging
 import os
 import sqlite3
 import uuid
-from datetime import date, datetime
+from datetime import date, datetime, time
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
-from flask import Flask, flash, render_template, url_for, current_app
+from flask import Flask, current_app, flash, render_template, url_for
 
 from alerts import ensure_alerts_database
 
@@ -172,6 +172,22 @@ def build_trades_per_strategy_chart(summaries: List[Dict[str, Any]]) -> Optional
     return figure.to_dict()
 
 
+def humanise_number(value: Any) -> str:
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return "—"
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if abs(number) >= 1_000_000:
+        return f"{number/1_000_000:.2f}M"
+    if abs(number) >= 1_000:
+        return f"{number/1_000:.2f}K"
+    if abs(number) >= 1:
+        return f"{number:.2f}"
+    return f"{number:.4f}"
+
+
 def configure_app() -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "asx-dashboard-secret")
@@ -181,6 +197,7 @@ def configure_app() -> Flask:
     app.config["DATA_DIRECTORY"] = data_directory
     app.config["DB_PATH"] = db_path
     register_routes(app)
+    app.jinja_env.filters.setdefault("humanise_number", humanise_number)
     return app
 
 
@@ -241,6 +258,7 @@ def register_routes(app: Flask) -> None:
             trades_chart=trades_chart,
             equity_chart_id=equity_chart_id,
             trades_chart_id=trades_chart_id,
+            summary_cards=build_summary_cards(raw_summaries),
         )
 
     @app.route("/signals")
@@ -252,7 +270,14 @@ def register_routes(app: Flask) -> None:
             df = pd.DataFrame()
         today = datetime.now().date()
         today_signals = filter_signals_for_today(df, today)
-        return render_template("signals.html", signals_df=today_signals)
+        table_data = dataframe_to_table(today_signals)
+        return render_template(
+            "signals.html",
+            table_columns=table_data["columns"],
+            table_rows=table_data["rows"],
+            has_signals=not today_signals.empty,
+            database_path=db_path,
+        )
 
     @app.route("/trades/<string:ticker>")
     def trades(ticker: str):
@@ -281,7 +306,8 @@ def register_routes(app: Flask) -> None:
                 render_template(
                     "trades.html",
                     ticker=ticker,
-                    trades_df=pd.DataFrame(),
+                    table_columns=[],
+                    table_rows=[],
                     chart_config=None,
                     data_source=file_path,
                     not_found=True,
@@ -289,11 +315,13 @@ def register_routes(app: Flask) -> None:
                 200,
             )
 
+        table_data = dataframe_to_table(df)
         chart_config = build_plotly_config(df, f"{ticker} Trades")
         return render_template(
             "trades.html",
             ticker=ticker,
-            trades_df=df,
+            table_columns=table_data["columns"],
+            table_rows=table_data["rows"],
             chart_config=chart_config,
             data_source=file_path,
             not_found=False,
@@ -304,22 +332,6 @@ def register_routes(app: Flask) -> None:
 
 app = configure_app()
 register_routes(app)
-
-
-def humanise_number(value: Any) -> str:
-    if value is None or (isinstance(value, float) and pd.isna(value)):
-        return "—"
-    try:
-        number = float(value)
-    except (TypeError, ValueError):
-        return str(value)
-    if abs(number) >= 1_000_000:
-        return f"{number/1_000_000:.2f}M"
-    if abs(number) >= 1_000:
-        return f"{number/1_000:.2f}K"
-    if abs(number) >= 1:
-        return f"{number:.2f}"
-    return f"{number:.4f}"
 
 
 def determine_time_column(df: pd.DataFrame) -> Optional[str]:
@@ -420,6 +432,119 @@ def snapshot_numeric_metrics(df: pd.DataFrame) -> Dict[str, str]:
     return metrics
 
 
+def dataframe_to_table(df: pd.DataFrame) -> Dict[str, List[List[Any]]]:
+    columns = list(df.columns)
+    rows: List[List[Any]] = []
+    if df.empty or not columns:
+        return {"columns": columns, "rows": rows}
+
+    for _, series in df.iterrows():
+        row: List[Any] = []
+        for column in columns:
+            row.append(_format_cell_value(series[column]))
+        rows.append(row)
+    return {"columns": columns, "rows": rows}
+
+
+def _format_cell_value(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, pd.Timestamp):
+        if pd.isna(value):
+            return None
+        return _format_datetime(value.to_pydatetime())
+    if isinstance(value, datetime):
+        return _format_datetime(value)
+    if isinstance(value, date):
+        return value.strftime("%Y-%m-%d")
+    if isinstance(value, time):
+        return value.strftime("%H:%M:%S")
+    if isinstance(value, str):
+        return value
+    try:
+        if pd.isna(value):
+            return None
+    except TypeError:
+        return value
+    return value
+
+
+def _format_datetime(dt_value: datetime) -> str:
+    if dt_value.time() == time.min:
+        return dt_value.strftime("%Y-%m-%d")
+    return dt_value.strftime("%Y-%m-%d %H:%M:%S")
+
+
+def build_summary_cards(summaries: Iterable[Dict[str, Any]]) -> List[Dict[str, str]]:
+    summaries = list(summaries)
+    if not summaries:
+        return []
+
+    total_trades = 0
+    pnl_total = 0.0
+    pnl_found = False
+    win_rates: List[float] = []
+    active_strategies = 0
+
+    for summary in summaries:
+        df = summary.get("dataframe", pd.DataFrame())
+        if df is None or df.empty:
+            continue
+        active_strategies += 1
+
+        trades = _extract_trades_count(df)
+        if trades:
+            total_trades += trades
+
+        pnl_value = _extract_metric_value(df, ["pnl", "profit", "net_profit", "total_pnl"])
+        if pnl_value is not None:
+            pnl_total += float(pnl_value)
+            pnl_found = True
+
+        win_rate_value = _extract_metric_value(df, ["win_rate", "winrate", "win_ratio", "winning_percentage"])
+        if win_rate_value is not None:
+            win_rate = float(win_rate_value)
+            if win_rate <= 1:
+                win_rate *= 100
+            win_rates.append(win_rate)
+
+    avg_win_rate = sum(win_rates) / len(win_rates) if win_rates else None
+    cards = [
+        {
+            "label": "Strategies Tracked",
+            "value": str(active_strategies),
+            "description": "Strategies with readable summary files.",
+        },
+        {
+            "label": "Total Trades",
+            "value": humanise_number(total_trades) if total_trades else "0",
+            "description": "Combined trade volume across strategies.",
+        },
+        {
+            "label": "Total PnL",
+            "value": humanise_number(pnl_total) if pnl_found else "—",
+            "description": "Aggregated profit and loss (last reported).",
+        },
+        {
+            "label": "Avg Win Rate",
+            "value": f"{avg_win_rate:.1f}%" if avg_win_rate is not None else "—",
+            "description": "Mean win rate for strategies with data.",
+        },
+    ]
+    return cards
+
+
+def _extract_metric_value(df: pd.DataFrame, aliases: Iterable[str]) -> Optional[float]:
+    columns = {col.lower().replace(" ", "_"): col for col in df.columns}
+    for alias in aliases:
+        if alias in columns:
+            column_name = columns[alias]
+            series = pd.to_numeric(df[column_name], errors="coerce")
+            if series.notna().any():
+                return float(series.iloc[-1])
+    return None
+
+
 def load_strategy_summaries(data_dir: Path) -> List[Dict[str, Any]]:
     if not data_dir.exists():
         logger.info("Data directory does not exist: %s", data_dir)
@@ -431,18 +556,13 @@ def load_strategy_summaries(data_dir: Path) -> List[Dict[str, Any]]:
         if df is None:
             continue
         display_name = csv_path.stem.replace("_", " ").title()
-        table_df = df.copy()
-        table_html = table_df.to_html(
-            classes="table table-striped table-hover table-sm align-middle",
-            index=False,
-            border=0,
-            max_rows=50,
-            justify="center",
-        )
+        table_df = df.head(200).copy()
+        table_data = dataframe_to_table(table_df)
         summary = {
             "display_name": display_name,
             "source": csv_path,
-            "table_html": table_html,
+            "table_columns": table_data["columns"],
+            "table_rows": table_data["rows"],
             "numeric_snapshot": snapshot_numeric_metrics(df),
             "chart_id": f"chart-{uuid.uuid4().hex}",
             "chart_json": build_plotly_config(df, f"{display_name} Metrics"),

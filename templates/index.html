@@ -1,13 +1,30 @@
 {% extends "layout.html" %}
 {% block title %}Strategy Summary - ASX Strategies Dashboard{% endblock %}
 {% block content %}
-<div class="d-flex justify-content-between align-items-center mb-4">
+<div class="d-flex justify-content-between align-items-center mb-4 flex-wrap gap-3">
     <div>
         <h1 class="h3 mb-1">Strategy Performance Overview</h1>
         <p class="text-muted mb-0">Aggregated view of strategies sourced from CSV summaries.</p>
     </div>
     <a class="btn btn-outline-primary" href="{{ url_for('signals') }}">View Signals</a>
 </div>
+{% if summary_cards %}
+    <div class="row g-3 mb-4">
+        {% for card in summary_cards %}
+            <div class="col-12 col-sm-6 col-xl-3">
+                <div class="card border-0 shadow-sm h-100">
+                    <div class="card-body">
+                        <p class="text-muted text-uppercase small mb-1">{{ card.label }}</p>
+                        <h2 class="h4 mb-2">{{ card.value }}</h2>
+                        {% if card.description %}
+                            <p class="text-muted small mb-0">{{ card.description }}</p>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        {% endfor %}
+    </div>
+{% endif %}
 {% if equity_curve_chart or trades_chart %}
     <div class="row gy-4 mb-4">
         {% if equity_curve_chart %}
@@ -57,9 +74,36 @@
                                 </div>
                             {% endif %}
                         </div>
-                        <div class="table-responsive mb-3">
-                            {{ summary.table_html | safe }}
-                        </div>
+                        {% if summary.table_columns %}
+                            <div class="table-responsive mb-3">
+                                <table class="table table-striped table-hover table-sm align-middle mb-0">
+                                    <thead class="table-light">
+                                        <tr>
+                                            {% for column in summary.table_columns %}
+                                                <th scope="col">{{ column }}</th>
+                                            {% endfor %}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {% for row in summary.table_rows %}
+                                            <tr>
+                                                {% for cell in row %}
+                                                    <td>{{ cell if cell is not none else "—" }}</td>
+                                                {% endfor %}
+                                            </tr>
+                                        {% else %}
+                                            <tr>
+                                                <td class="text-center text-muted" colspan="{{ summary.table_columns|length }}">No rows to display.</td>
+                                            </tr>
+                                        {% endfor %}
+                                    </tbody>
+                                </table>
+                            </div>
+                        {% else %}
+                            <div class="alert alert-info" role="alert">
+                                No tabular data available for this strategy.
+                            </div>
+                        {% endif %}
                         {% if summary.chart_json %}
                             <div id="{{ summary.chart_id }}" style="height:320px;"></div>
                         {% else %}
@@ -74,20 +118,23 @@
     </div>
 {% else %}
     <div class="alert alert-warning" role="alert">
-        No CSV summaries were found in {{ data_directory }}.
+        <div class="d-flex flex-column flex-lg-row justify-content-between gap-2">
+            <div>
+                <h2 class="h5 mb-1">No strategy summaries available</h2>
+                <p class="mb-0">We could not find any CSV summaries in <code>{{ data_directory }}</code>.</p>
+            </div>
+            <div class="d-flex flex-column flex-sm-row gap-2 align-items-start align-items-sm-center">
+                <a class="alert-link" href="{{ url_for('index') }}?action=run_daily_job">Run daily job</a>
+                <span class="text-muted d-none d-sm-inline">|</span>
+                <a class="alert-link" href="{{ url_for('signals') }}">Review today's signals</a>
+            </div>
+        </div>
     </div>
 {% endif %}
 {% endblock %}
 {% block body_scripts %}
 {{ super() }}
-<script>
-    document.addEventListener('DOMContentLoaded', () => {
-        const chartConfigs = {{ chart_configs | tojson | safe }};
-        chartConfigs.forEach(({id, config}) => {
-            if (config && document.getElementById(id)) {
-                Plotly.newPlot(id, config.data, config.layout, {responsive: true, displayModeBar: false});
-            }
-        });
-    });
-</script>
+{% if chart_configs %}
+<script type="application/json" id="chart-configs-data">{{ chart_configs | tojson | safe }}</script>
+{% endif %}
 {% endblock %}
