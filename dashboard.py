@@ -7,25 +7,177 @@ import sqlite3
 import uuid
 from datetime import datetime, date
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import pandas as pd
 import plotly.graph_objects as go
-from flask import Flask, abort, flash, render_template
+from flask import Flask, flash, render_template, url_for
 
 APP_ROOT = Path(__file__).resolve().parent
 DATA_DIR = APP_ROOT / "data"
-DEFAULT_DB_PATH = APP_ROOT / "signals.db"
+DEFAULT_DB_PATH = APP_ROOT / "db" / "signals.db"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+def ensure_runtime_directories(data_dir: Path, db_path: Path) -> None:
+    for directory in {data_dir, db_path.parent}:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # pragma: no cover - diagnostics
+            logger.debug("Unable to create directory %s: %s", directory, exc)
+
+
+def build_trade_navigation(data_dir: Path) -> List[Tuple[str, str]]:
+    if not data_dir.exists():
+        return []
+
+    items: List[Tuple[str, str]] = []
+    for csv_path in sorted(data_dir.glob("**/*.csv")):
+        stem = csv_path.stem
+        if "summary" in stem.lower():
+            continue
+        identifier = stem.upper()
+        label = stem.replace("_", " ").replace("-", " ").upper()
+        items.append((identifier, label))
+
+    seen = set()
+    unique_items: List[Tuple[str, str]] = []
+    for identifier, label in items:
+        if identifier in seen:
+            continue
+        seen.add(identifier)
+        unique_items.append((identifier, label))
+
+    return unique_items
+
+
+def _find_equity_column(df: pd.DataFrame) -> Optional[str]:
+    candidates = [
+        "equity",
+        "equity_curve",
+        "cumulative_equity",
+        "cum_return",
+        "cumreturn",
+        "cumulative_return",
+        "portfolio_value",
+        "balance",
+        "nav",
+    ]
+    lower_columns = {col.lower().replace(" ", "_"): col for col in df.columns}
+    for candidate in candidates:
+        for column_key, original in lower_columns.items():
+            if candidate in column_key:
+                return original
+    return None
+
+
+def build_equity_curve_chart(summaries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    figure = go.Figure()
+    traces_added = 0
+
+    for summary in summaries:
+        frame: pd.DataFrame = summary.get("dataframe", pd.DataFrame())
+        if frame.empty:
+            continue
+
+        working = frame.copy()
+        time_col = determine_time_column(working)
+        equity_col = _find_equity_column(working)
+        if not equity_col:
+            continue
+
+        y_values = pd.to_numeric(working[equity_col], errors="coerce").dropna()
+        if y_values.empty:
+            continue
+
+        if time_col:
+            x_values = working.loc[y_values.index, time_col].astype(str).tolist()
+        else:
+            x_values = list(range(1, len(y_values) + 1))
+
+        figure.add_trace(
+            go.Scatter(
+                x=x_values,
+                y=y_values,
+                mode="lines",
+                name=summary.get("display_name", "Equity"),
+                hovertemplate="%{y:.4f}<extra>%{fullData.name}</extra>",
+            )
+        )
+        traces_added += 1
+
+    if traces_added == 0:
+        return None
+
+    figure.update_layout(
+        title="Equity Curve",
+        template="plotly_white",
+        margin=dict(l=30, r=10, t=40, b=30),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return figure.to_dict()
+
+
+def _extract_trades_count(frame: pd.DataFrame) -> Optional[int]:
+    if frame.empty:
+        return None
+
+    lower_columns = {col.lower().replace(" ", "_"): col for col in frame.columns}
+    for key, column in lower_columns.items():
+        if "trade" in key:
+            numeric = pd.to_numeric(frame[column], errors="coerce")
+            if numeric.notna().any():
+                return int(numeric.fillna(0).sum())
+
+    numeric_rows = frame.select_dtypes(include="number")
+    if not numeric_rows.empty:
+        return int(len(frame))
+    return None
+
+
+def build_trades_per_strategy_chart(summaries: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    bars: List[Tuple[str, int]] = []
+
+    for summary in summaries:
+        frame: pd.DataFrame = summary.get("dataframe", pd.DataFrame())
+        count = _extract_trades_count(frame)
+        if count is None:
+            continue
+        bars.append((summary.get("display_name", "Strategy"), count))
+
+    if not bars:
+        return None
+
+    labels, values = zip(*bars)
+    figure = go.Figure(
+        data=[
+            go.Bar(
+                x=list(labels),
+                y=list(values),
+                marker_color="#0d6efd",
+                hovertemplate="%{y} trades<extra>%{x}</extra>",
+            )
+        ]
+    )
+    figure.update_layout(
+        title="Trades Per Strategy",
+        template="plotly_white",
+        margin=dict(l=30, r=10, t=40, b=30),
+        xaxis_tickangle=-30,
+    )
+    return figure.to_dict()
+
+
 def configure_app() -> Flask:
     app = Flask(__name__)
     app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY", "asx-dashboard-secret")
-    app.config["DATA_DIRECTORY"] = DATA_DIR
-    app.config["DB_PATH"] = Path(os.environ.get("SIGNALS_DB_PATH", str(DEFAULT_DB_PATH)))
+    data_directory = Path(os.environ.get("DATA_DIRECTORY", str(DATA_DIR)))
+    db_path = Path(os.environ.get("SIGNALS_DB_PATH", str(DEFAULT_DB_PATH)))
+    ensure_runtime_directories(data_directory, db_path)
+    app.config["DATA_DIRECTORY"] = data_directory
+    app.config["DB_PATH"] = db_path
     return app
 
 
@@ -34,7 +186,19 @@ app = configure_app()
 
 @app.context_processor
 def inject_last_refreshed() -> Dict[str, str]:
-    return {"last_refreshed": datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+    links = []
+    data_directory: Path = app.config.get("DATA_DIRECTORY", DATA_DIR)
+    for identifier, label in build_trade_navigation(Path(data_directory)):
+        try:
+            link_url = url_for("trades", ticker=identifier)
+        except Exception:  # pragma: no cover - url build defensive guard
+            link_url = "#"
+        links.append({"label": label, "url": link_url, "identifier": identifier})
+
+    return {
+        "last_refreshed": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "trade_nav_links": links,
+    }
 
 
 def humanise_number(value: Any) -> str:
@@ -164,7 +328,7 @@ def load_strategy_summaries(data_dir: Path) -> List[Dict[str, Any]]:
         display_name = csv_path.stem.replace("_", " ").title()
         table_df = df.copy()
         table_html = table_df.to_html(
-            classes="table table-hover table-sm align-middle",
+            classes="table table-striped table-hover table-sm align-middle",
             index=False,
             border=0,
             max_rows=50,
@@ -177,6 +341,7 @@ def load_strategy_summaries(data_dir: Path) -> List[Dict[str, Any]]:
             "numeric_snapshot": snapshot_numeric_metrics(df),
             "chart_id": f"chart-{uuid.uuid4().hex}",
             "chart_json": build_plotly_config(df, f"{display_name} Metrics"),
+            "dataframe": df,
         }
         summaries.append(summary)
     return summaries
@@ -252,15 +417,38 @@ def locate_trade_file(ticker: str, data_dir: Path) -> Optional[Path]:
 
 @app.route("/")
 def index():
-    summaries = load_strategy_summaries(app.config["DATA_DIRECTORY"])
+    raw_summaries = load_strategy_summaries(app.config["DATA_DIRECTORY"])
+    equity_curve_chart = build_equity_curve_chart(raw_summaries)
+    trades_chart = build_trades_per_strategy_chart(raw_summaries)
+    equity_chart_id = f"equity-chart-{uuid.uuid4().hex}" if equity_curve_chart else None
+    trades_chart_id = f"trades-chart-{uuid.uuid4().hex}" if trades_chart else None
+
     chart_configs = [
-        {"id": summary["chart_id"], "config": summary["chart_json"]} for summary in summaries
+        {"id": summary["chart_id"], "config": summary["chart_json"]}
+        for summary in raw_summaries
+        if summary.get("chart_json")
     ]
+
+    if equity_curve_chart and equity_chart_id:
+        chart_configs.append({"id": equity_chart_id, "config": equity_curve_chart})
+    if trades_chart and trades_chart_id:
+        chart_configs.append({"id": trades_chart_id, "config": trades_chart})
+
+    summaries: List[Dict[str, Any]] = []
+    for summary in raw_summaries:
+        trimmed = summary.copy()
+        trimmed.pop("dataframe", None)
+        summaries.append(trimmed)
+
     return render_template(
         "index.html",
         summaries=summaries,
         chart_configs=chart_configs,
         data_directory=app.config["DATA_DIRECTORY"],
+        equity_curve_chart=equity_curve_chart,
+        trades_chart=trades_chart,
+        equity_chart_id=equity_chart_id,
+        trades_chart_id=trades_chart_id,
     )
 
 
@@ -280,11 +468,34 @@ def trades(ticker: str):
     ticker = ticker.upper()
     file_path = locate_trade_file(ticker, app.config["DATA_DIRECTORY"])
     if not file_path:
-        abort(404, description=f"No trade history found for ticker {ticker}.")
+        flash(f"No trade history found for {ticker}.")
+        empty_df = pd.DataFrame()
+        return (
+            render_template(
+                "trades.html",
+                ticker=ticker,
+                trades_df=empty_df,
+                chart_config=None,
+                data_source=None,
+                not_found=True,
+            ),
+            200,
+        )
 
     df = read_csv_file(file_path)
     if df is None:
-        abort(500, description="Unable to read trade data.")
+        flash("Unable to read trade data. Please verify the CSV contents.")
+        return (
+            render_template(
+                "trades.html",
+                ticker=ticker,
+                trades_df=pd.DataFrame(),
+                chart_config=None,
+                data_source=file_path,
+                not_found=True,
+            ),
+            200,
+        )
 
     chart_config = build_plotly_config(df, f"{ticker} Trades")
     return render_template(
@@ -292,6 +503,8 @@ def trades(ticker: str):
         ticker=ticker,
         trades_df=df,
         chart_config=chart_config,
+        data_source=file_path,
+        not_found=False,
     )
 
 

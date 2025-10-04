@@ -38,8 +38,29 @@ import sqlite3
 LOGGER = logging.getLogger(__name__)
 
 
-DEFAULT_DATA_DIR = Path("/data")
-DEFAULT_DB_PATH = Path("db") / "signals.db"
+PROJECT_ROOT = Path(__file__).resolve().parent
+DEFAULT_DATA_DIR = PROJECT_ROOT / "data"
+DEFAULT_DB_PATH = PROJECT_ROOT / "db" / "signals.db"
+EXTERNAL_DATA_DIR = Path("/data")
+EXTERNAL_DB_DIR = Path("/db")
+
+
+def _ensure_directories() -> None:
+    """Create default and external runtime directories when possible."""
+
+    for directory in {
+        DEFAULT_DATA_DIR,
+        DEFAULT_DB_PATH.parent,
+        EXTERNAL_DATA_DIR,
+        EXTERNAL_DB_DIR,
+    }:
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:  # pragma: no cover - diagnostics only
+            LOGGER.debug("Unable to create directory %s: %s", directory, exc)
+
+
+_ensure_directories()
 
 
 @dataclass(frozen=True)
@@ -83,35 +104,45 @@ def load_latest_ticker_data(data_dir: Path | str = DEFAULT_DATA_DIR) -> Dict[str
     """
 
     data_path = Path(data_dir)
-    if not data_path.exists():
-        raise DataLoadError(f"Data directory does not exist: {data_path}")
+    try:
+        data_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:  # pragma: no cover - defensive
+        raise DataLoadError(f"Unable to access data directory {data_path}: {exc}") from exc
+
+    candidate_paths = [data_path]
+    if data_path != EXTERNAL_DATA_DIR and EXTERNAL_DATA_DIR.exists():
+        candidate_paths.append(EXTERNAL_DATA_DIR)
 
     ticker_frames: Dict[str, pd.DataFrame] = {}
-    for entry in sorted(data_path.iterdir(), key=lambda p: p.name):
-        if entry.is_dir():
-            latest_file = _find_latest_file(entry)
-            if latest_file is None:
-                LOGGER.warning("No data files found for ticker directory %s", entry.name)
+    for base_path in candidate_paths:
+        for entry in sorted(base_path.iterdir(), key=lambda p: p.name):
+            if entry.is_dir():
+                latest_file = _find_latest_file(entry)
+                if latest_file is None:
+                    LOGGER.warning("No data files found for ticker directory %s", entry.name)
+                    continue
+                ticker = entry.name
+                frame = _read_data_file(latest_file)
+            elif entry.is_file():
+                ticker = entry.stem
+                frame = _read_data_file(entry)
+            else:
+                LOGGER.debug("Skipping unknown filesystem entry: %s", entry)
                 continue
-            ticker = entry.name
-            frame = _read_data_file(latest_file)
-        elif entry.is_file():
-            ticker = entry.stem
-            frame = _read_data_file(entry)
-        else:
-            LOGGER.debug("Skipping unknown filesystem entry: %s", entry)
-            continue
 
-        if frame.empty:
-            LOGGER.warning("Skipping ticker %s because data frame is empty", ticker)
-            continue
+            if frame.empty:
+                LOGGER.warning("Skipping ticker %s because data frame is empty", ticker)
+                continue
 
-        frame = _prepare_dataframe(frame)
-        if frame.empty:
-            LOGGER.warning("Skipping ticker %s because prepared frame is empty", ticker)
-            continue
+            frame = _prepare_dataframe(frame)
+            if frame.empty:
+                LOGGER.warning("Skipping ticker %s because prepared frame is empty", ticker)
+                continue
 
-        ticker_frames[ticker.upper()] = frame
+            ticker_frames.setdefault(ticker.upper(), frame)
+
+    if not ticker_frames:
+        LOGGER.info("No ticker data discovered in %s", data_path)
 
     return ticker_frames
 
@@ -138,6 +169,9 @@ def _read_data_file(path: Path) -> pd.DataFrame:
             frame = pd.read_json(path, orient="records")
         else:
             raise DataLoadError(f"Unsupported file extension for {path}")
+    except pd.errors.EmptyDataError:
+        LOGGER.info("Data file %s is empty", path)
+        return pd.DataFrame()
     except Exception as exc:  # pragma: no cover - defensive logging
         raise DataLoadError(f"Failed to load data file {path}: {exc}") from exc
 
@@ -419,6 +453,11 @@ def generate_and_store_alerts(
         LOGGER.info("No strategies discovered; aborting alert generation")
         return []
 
+    if not data_frames:
+        LOGGER.info("No data available for alert generation")
+        _ensure_database(Path(db_path))
+        return []
+
     backtester_module = _load_backtester(backtester)
 
     alerts: List[Alert] = []
@@ -459,7 +498,11 @@ def get_active_alerts(
 
     if not db_path.exists():
         LOGGER.info("Alert database not found at %s", db_path)
-        return pd.DataFrame(columns=["date", "ticker", "strategy", "entry_price", "target_price", "stop_loss"])
+        with _ensure_database(db_path) as connection:
+            connection.commit()
+        return pd.DataFrame(
+            columns=["date", "ticker", "strategy", "entry_price", "target_price", "stop_loss"]
+        )
 
     with sqlite3.connect(db_path) as conn:
         try:
