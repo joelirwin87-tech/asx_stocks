@@ -1,5 +1,5 @@
 {
-  "tickers": ["PTM.AX", "RMS.AX", "CMW.AX", "DYL.AX", "REG.AX", "MSB.AX", "LOT.AX", "EVT.AX", "SLX.AX", "NWH.AX", "RED.AX", "IMD.AX", "ABB.AX", "ELD.AX", "MMS.AX", "WPR.AX", "ARF.AX", "SGM.AX", "DBI.AX", "WEB.AX"],
-  "capital": 10000,
-  "tp_percents": [0.03, 0.05]
-}
+   "tickers": ["PTM.AX", "RMS.AX", "CMW.AX", "DYL.AX", "REG.AX", "MSB.AX", "LOT.AX", "EVT.AX", "SLX.AX", "NWH.AX", "RED.AX", "IMD.AX", "ABB.AX", "ELD.AX", "MMS.AX", "WPR.AX", "ARF.AX", "SGM.AX", "DBI.AX", "WEB.AX"],
+
+  "start_date": "2000-01-01"
+
