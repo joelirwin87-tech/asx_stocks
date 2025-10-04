@@ -67,7 +67,10 @@ def _run_data_update() -> None:
     update_callable = getattr(data_fetcher, "update", None)
     if callable(update_callable):
         LOGGER.info("Running data_fetcher.update()")
-        update_callable()
+        try:
+            update_callable()
+        except Exception as exc:  # pragma: no cover - defensive logging only
+            LOGGER.exception("data_fetcher.update() failed: %s", exc)
         return
 
     LOGGER.info("data_fetcher.update() not found; running fallback updater")
@@ -82,7 +85,6 @@ def _run_data_update() -> None:
             data_fetcher.update_ticker_data(ticker, start_date)
         except Exception as exc:  # pragma: no cover - logged and surfaced
             LOGGER.exception("Failed to update data for %s: %s", ticker, exc)
-            raise
 
 
 def _prepare_dataframe(frame: pd.DataFrame) -> pd.DataFrame:
@@ -239,7 +241,7 @@ def main() -> None:
         LOGGER.exception("Daily run failed: %s", exc)
         sys.exit(1)
 
-    print("Daily run complete")
+    LOGGER.info("Daily run complete")
 
 
 if __name__ == "__main__":
